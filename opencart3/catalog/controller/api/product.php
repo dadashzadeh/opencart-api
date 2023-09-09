@@ -62,7 +62,7 @@ class ControllerApiProduct extends Controller
         $this->response->setOutput(json_encode($json));
     }
     
-    public function edit_product()
+    public function edit_product_price()
     {
         
         $json = array();
@@ -75,6 +75,46 @@ class ControllerApiProduct extends Controller
         
         if ($query->num_rows > 0) {
             $this->db->query("UPDATE oc_product SET price = {$price} , quantity = {$quantity} WHERE product_id = {$product_id} ");
+            
+            $json['success'] = 'Product updated successfully';
+        } else {
+            $json['error'] = 'Product not found';
+        }
+        
+        $this->response->addHeader('Content-Type: application/json');
+        $this->response->setOutput(json_encode($json));
+    }
+    
+    public function edit_product_content()
+    {
+        $json = array();
+        $product_id = (int) $this->request->post['product_id'];
+        $description      = $this->request->post['description'];
+    
+        $query = $this->db->query("SELECT * FROM `oc_product_description` WHERE `product_id` = {$product_id}");
+    
+        if ($query->num_rows > 0) {
+            $this->db->query("UPDATE oc_product_description SET description = '{$description}' WHERE product_id = {$product_id} ");
+            
+            $json['success'] = 'Product updated successfully';
+        } else {
+            $json['error'] = 'Product not found';
+        }
+        
+        $this->response->addHeader('Content-Type: application/json');
+        $this->response->setOutput(json_encode($json));
+    }
+    
+    public function edit_product_meta_description()
+    {
+        $json = array();
+        $product_id = (int) $this->request->post['product_id'];
+        $meta_description      = $this->request->post['meta_description'];
+    
+        $query = $this->db->query("SELECT * FROM `oc_product_description` WHERE `product_id` = {$product_id}");
+    
+        if ($query->num_rows > 0) {
+            $this->db->query("UPDATE oc_product_description SET meta_description = '{$meta_description}' WHERE product_id = {$product_id} ");
             
             $json['success'] = 'Product updated successfully';
         } else {
