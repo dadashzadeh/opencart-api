@@ -71,6 +71,18 @@ class OpenCartAPI:
             return html.escape(data, quote=False)
         else:
             return data
+
+    def _clean_json_response(self, text: str) -> str:
+        """
+        Clean PHP notices/warnings from JSON response.
+        Extracts only the JSON part from response text.
+        """
+        # Try to find JSON object or array in the text
+        # Look for the last opening brace/bracket
+        json_match = re.search(r'(\{.*\}|\[.*\])\s*$', text, re.DOTALL)
+        if json_match:
+            return json_match.group(1)
+        return text
     
     def _request(
         self, 
@@ -97,43 +109,33 @@ class OpenCartAPI:
         """
         url = f"{self.base_url}/index.php"
         
-        # Prepare parameters
         full_params = {'route': f'api/product_api/{endpoint}'}
         if params:
             full_params.update(params)
         
-        print(full_params)
         try:
             if method == 'GET':
-                response = self.session.get(
-                    url, 
-                    params=full_params,
-                    timeout=self.timeout
-                )
+                response = self.session.get(url, params=full_params, timeout=self.timeout)
             elif method == 'POST':
-                response = self.session.post(
-                    url, 
-                    params=full_params,
-                    json=data,
-                    timeout=self.timeout
-                )
+                response = self.session.post(url, params=full_params, json=data, timeout=self.timeout)
             elif method == 'DELETE':
-                response = self.session.delete(
-                    url, 
-                    params=full_params,
-                    timeout=self.timeout
-                )
+                response = self.session.delete(url, params=full_params, timeout=self.timeout)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
             
-            # Handle non-200 responses
             response.raise_for_status()
             
-            # Parse JSON response
+            # Clean and parse JSON response
             try:
+                # First try direct parsing
                 result = response.json()
             except json.JSONDecodeError:
-                raise ValueError(f"Invalid JSON response: {response.text}")
+                # If fails, try cleaning PHP notices
+                cleaned_text = self._clean_json_response(response.text)
+                try:
+                    result = json.loads(cleaned_text)
+                except json.JSONDecodeError:
+                    raise ValueError(f"Invalid JSON response after cleaning: {response.text[:500]}")
             
             # Validate response structure
             if 'success' not in result:
@@ -248,12 +250,7 @@ class OpenCartAPI:
         
         return self._request('getProduct', params={'product_id': product_id})
     
-    def update_product(
-        self, 
-        product_id: int, 
-        data: Dict[str, Any],
-        encode_html: bool = False
-    ) -> Dict[str, Any]:
+    def update_product(self, product_id: int, data: Dict[str, Any], encode_html: bool = False) -> Dict[str, Any]:
         """
         Update product with optional HTML encoding.
         
@@ -487,8 +484,8 @@ class OpenCartAPI:
 # Usage Example with Full Error Handling
 if __name__ == '__main__':
     # Configuration
-    BASE_URL = 'http://localhost/'
-    API_KEY = 'key'
+    BASE_URL = 'http://localhost/opencart2maxshop'
+    API_KEY = 'sds!dwd3dsSFSd111!'
     
     # Initialize client
     api = OpenCartAPI(
@@ -504,22 +501,18 @@ if __name__ == '__main__':
         products = api.search_products('موبایل', limit=3)
         print(f"✅ Found {products['count']} products")
         if products['count'] > 0:
-            print(json.dumps(products['data'][0], indent=2, ensure_ascii=False))
+            print(json.dumps(products['data'], indent=2, ensure_ascii=False))
         
         # 2. Get product details
         print("\n📦 Getting product details...")
         product = api.get_product(69)
-        print(f"✅ Retrieved product: {product['data']}")
+        print(f"{product['data']}")
         
         # 3. Search attributes
-        print("\n🏷️ Searching attributes by key...")
-        attrs = api.search_attributes_by_key('تست')
-        print(f"✅ Found {attrs}")
-        
-        # 4. Get debug info
-        print("\n⚙️ Getting debug info...")
-        debug = api.get_debug_info()
-        print(f"{debug}")
+        #print("\n🏷️ Searching attributes by key...")
+        #attrs = api.search_attributes_by_key('تست')
+        #print(f"✅ Found {attrs}")
+
         
         # 6. Update product example (commented out for safety)
         # print("\n✏️ Updating product...")
@@ -548,4 +541,3 @@ if __name__ == '__main__':
     finally:
         # Close session
         api.session.close()
-        print("\n🔒 Session closed")
