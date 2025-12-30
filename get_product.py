@@ -42,7 +42,7 @@ import requests
 import json
 import html
 from typing import Dict, List, Optional, Union, Any, Tuple
-
+import re
 
 class OpenCartAPI:
     """
