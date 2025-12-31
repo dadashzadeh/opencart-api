@@ -1,6 +1,6 @@
 <?php
 /**
- * Product API Controller
+ * Product API Controller - COMPLETE VERSION with Full Field Preservation
  * Compatible with OpenCart 2.x and 3.x
  * RESTful API for managing products, attributes, and attribute groups
  * Location: catalog/controller/api/product_api.php
@@ -181,7 +181,7 @@ class ControllerApiProductApi extends Controller {
         }
 
         // Validate API key (store in config.php: define('PRODUCT_API_KEY', 'your_secure_key');)
-        $validApiKey = defined('PRODUCT_API_KEY') ? PRODUCT_API_KEY : 'your_secure_key';
+        $validApiKey = defined('PRODUCT_API_KEY') ? PRODUCT_API_KEY : 'sds!dwd3dsSFSd111!';
         
         if ($apiKey !== $validApiKey) {
             $this->sendResponse(array(
@@ -266,7 +266,7 @@ class ControllerApiProductApi extends Controller {
 
         $documentation = array(
             'api_name' => 'OpenCart Product API',
-            'version' => '1.0.0',
+            'version' => '1.1.0',
             'opencart_version' => VERSION,
             'base_url' => $apiBase,
             'authentication' => array(
@@ -664,9 +664,14 @@ class ControllerApiProductApi extends Controller {
     }
     
     /**
-     * Update product information
+     * ✅✅✅ UPDATED: Update product information with COMPLETE field preservation
      * POST: /index.php?route=api/product_api/updateProduct&product_id=123&api_key=xxx
      * Body: JSON with product data
+     * 
+     * ✅ VERSION 1.1 - Enhanced with comprehensive relational data preservation
+     * ✅ Preserves ALL OpenCart relational fields (options, discounts, specials, etc.)
+     * ✅ Only updates fields that are explicitly provided in the request
+     * ✅ Compatible with future OpenCart versions
      */
     public function updateProduct() {
         $this->authenticate();
@@ -704,10 +709,12 @@ class ControllerApiProductApi extends Controller {
                 ), 400);
             }
             
-            // Merge with existing product data
+            // Merge with existing product data (preserves simple fields in oc_product table)
             $data = array_merge($existingProduct, $jsonData);
             
-            // Get existing descriptions if not provided
+            // ========================================
+            // HANDLE PRODUCT DESCRIPTIONS
+            // ========================================
             if (!isset($data['product_description'])) {
                 $data['product_description'] = $this->adminProductModel->getProductDescriptions($productId);
             }
@@ -740,14 +747,9 @@ class ControllerApiProductApi extends Controller {
                 }
             }
             
-            // Update related products if provided
-            if (isset($jsonData['product_related'])) {
-                $data['product_related'] = $jsonData['product_related'];
-            } else if (!isset($data['product_related'])) {
-                $data['product_related'] = $this->adminProductModel->getProductRelated($productId);
-            }
-            
-            // Update attributes if provided
+            // ========================================
+            // HANDLE PRODUCT ATTRIBUTES
+            // ========================================
             if (isset($jsonData['attributes'])) {
                 $data['product_attribute'] = array();
                 foreach ($jsonData['attributes'] as $attr) {
@@ -768,27 +770,117 @@ class ControllerApiProductApi extends Controller {
                 $data['product_attribute'] = $this->adminProductModel->getProductAttributes($productId);
             }
             
-            // Preserve other data if not provided
+            // ========================================
+            // ✅✅✅ PRESERVE ALL RELATIONAL DATA ✅✅✅
+            // This is the KEY FIX - preserves all relational tables
+            // ========================================
+            
+            // Related products
+            if (!isset($data['product_related'])) {
+                $data['product_related'] = $this->adminProductModel->getProductRelated($productId);
+            }
+            
+            // Store associations
             if (!isset($data['product_store'])) {
                 $data['product_store'] = $this->adminProductModel->getProductStores($productId);
             }
+            
+            // Category associations
             if (!isset($data['product_category'])) {
                 $data['product_category'] = $this->adminProductModel->getProductCategories($productId);
             }
+            
+            // Filters
             if (!isset($data['product_filter'])) {
                 $data['product_filter'] = $this->adminProductModel->getProductFilters($productId);
             }
+            
+            // Downloads
             if (!isset($data['product_download'])) {
                 $data['product_download'] = $this->adminProductModel->getProductDownloads($productId);
             }
+            
+            // Layouts
             if (!isset($data['product_layout'])) {
                 $data['product_layout'] = $this->adminProductModel->getProductLayouts($productId);
             }
+            
+            // Images (additional product images)
             if (!isset($data['product_image'])) {
                 $data['product_image'] = $this->adminProductModel->getProductImages($productId);
             }
             
-            // Update product using admin model
+            // ========================================
+            // ✅✅✅ CRITICAL FIELDS - NEWLY ADDED ✅✅✅
+            // These fields were MISSING in the original code
+            // ========================================
+            
+            // Product Options (size, color dropdowns, radio buttons, checkboxes, etc.)
+            // ⚠️ THIS WAS THE MAIN BUG - Options were being deleted!
+            // Product Options (size, color dropdowns, etc.)
+            if (!isset($data['product_option'])) {
+                if (method_exists($this->adminProductModel, 'getProductOptions')) {
+                    $data['product_option'] = $this->adminProductModel->getProductOptions($productId);
+                } else {
+                    $data['product_option'] = array();
+                }
+            }
+            
+            // Quantity-based discounts (tier pricing)
+            if (!isset($data['product_discount'])) {
+                if (method_exists($this->adminProductModel, 'getProductDiscounts')) {
+                    $data['product_discount'] = $this->adminProductModel->getProductDiscounts($productId);
+                } else {
+                    $data['product_discount'] = array();
+                }
+            }
+            
+            // Special prices with date ranges (sale prices)
+            if (!isset($data['product_special'])) {
+                if (method_exists($this->adminProductModel, 'getProductSpecials')) {
+                    $data['product_special'] = $this->adminProductModel->getProductSpecials($productId);
+                } else {
+                    $data['product_special'] = array();
+                }
+            }
+            
+            // Reward points per customer group
+            if (!isset($data['product_reward'])) {
+                if (method_exists($this->adminProductModel, 'getProductRewards')) {
+                    $data['product_reward'] = $this->adminProductModel->getProductRewards($productId);
+                } else {
+                    $data['product_reward'] = array();
+                }
+            }
+            
+            // Recurring payment profiles (subscriptions)
+            // ✅ Fixed: Check method name and existence
+            if (!isset($data['product_recurring'])) {
+                // Try singular form first (OpenCart standard)
+                if (method_exists($this->adminProductModel, 'getProductRecurring')) {
+                    try {
+                        $data['product_recurring'] = $this->adminProductModel->getProductRecurring($productId);
+                    } catch (Exception $e) {
+                        $data['product_recurring'] = array();
+                    }
+                } 
+                // Fallback: Try plural form
+                elseif (method_exists($this->adminProductModel, 'getProductRecurrings')) {
+                    try {
+                        $data['product_recurring'] = $this->adminProductModel->getProductRecurrings($productId);
+                    } catch (Exception $e) {
+                        $data['product_recurring'] = array();
+                    }
+                }
+                // Neither method exists
+                else {
+                    $data['product_recurring'] = array();
+                }
+            }
+            
+            // ========================================
+            // UPDATE PRODUCT IN DATABASE
+            // ========================================
             $this->adminProductModel->editProduct($productId, $data);
             
             $this->sendResponse(array(
@@ -804,6 +896,127 @@ class ControllerApiProductApi extends Controller {
             ), 500);
         }
     }
+    
+    /**
+     * ✅ OPTIONAL: Helper method to get all relational data (FUTURE-PROOF approach)
+     * 
+     * This method automatically detects and retrieves all known relational fields.
+     * If OpenCart adds new fields in future versions, just add them to this array.
+     * 
+     * @param int $productId Product ID
+     * @return array Associative array of field_name => data
+     */
+    private function getProductRelationalData($productId) {
+        // Map of data field name => model method to call
+        $relationalFields = array(
+            'product_store'     => 'getProductStores',
+            'product_category'  => 'getProductCategories',
+            'product_filter'    => 'getProductFilters',
+            'product_download'  => 'getProductDownloads',
+            'product_layout'    => 'getProductLayouts',
+            'product_image'     => 'getProductImages',
+            'product_option'    => 'getProductOptions',
+            'product_discount'  => 'getProductDiscounts',
+            'product_special'   => 'getProductSpecials',
+            'product_reward'    => 'getProductRewards',
+            'product_recurring' => 'getProductRecurrings',
+            'product_related'   => 'getProductRelated',
+            'product_attribute' => 'getProductAttributes'
+        );
+        
+        $data = array();
+        
+        foreach ($relationalFields as $field => $method) {
+            // Check if method exists (for compatibility with different OpenCart versions)
+            if (method_exists($this->adminProductModel, $method)) {
+                try {
+                    $data[$field] = $this->adminProductModel->$method($productId);
+                } catch (Exception $e) {
+                    // Log but don't fail - some methods might not exist in older versions
+                    error_log("Warning: Could not call {$method}: " . $e->getMessage());
+                    $data[$field] = array();
+                }
+            }
+        }
+        
+        return $data;
+    }
+    
+    /**
+     * ✅ ALTERNATIVE updateProduct() using the helper method
+     * Uncomment this version if you prefer the cleaner approach
+     * 
+     * public function updateProduct() {
+     *     $this->authenticate();
+     *     
+     *     try {
+     *         $productId = isset($this->request->get['product_id']) ? (int)$this->request->get['product_id'] : 0;
+     *         
+     *         if (!$productId) {
+     *             $this->sendResponse(array(
+     *                 'success' => false,
+     *                 'error' => 'Product ID is required'
+     *             ), 400);
+     *         }
+     *         
+     *         $existingProduct = $this->adminProductModel->getProduct($productId);
+     *         if (!$existingProduct) {
+     *             $this->sendResponse(array(
+     *                 'success' => false,
+     *                 'error' => 'Product not found'
+     *             ), 404);
+     *         }
+     *         
+     *         $jsonData = json_decode(file_get_contents('php://input'), true);
+     *         if (!$jsonData) {
+     *             $jsonData = $this->request->post;
+     *         }
+     *         
+     *         if (empty($jsonData)) {
+     *             $this->sendResponse(array(
+     *                 'success' => false,
+     *                 'error' => 'No data provided'
+     *             ), 400);
+     *         }
+     *         
+     *         $data = array_merge($existingProduct, $jsonData);
+     *         
+     *         // Handle descriptions
+     *         if (!isset($data['product_description'])) {
+     *             $data['product_description'] = $this->adminProductModel->getProductDescriptions($productId);
+     *         }
+     *         
+     *         // Handle attributes
+     *         if (isset($jsonData['attributes'])) {
+     *             // ... attribute handling code ...
+     *         } else if (!isset($data['product_attribute'])) {
+     *             $data['product_attribute'] = $this->adminProductModel->getProductAttributes($productId);
+     *         }
+     *         
+     *         // ✅ Smart preservation of all relational data
+     *         $relationalData = $this->getProductRelationalData($productId);
+     *         foreach ($relationalData as $field => $value) {
+     *             if (!isset($data[$field])) {
+     *                 $data[$field] = $value;
+     *             }
+     *         }
+     *         
+     *         $this->adminProductModel->editProduct($productId, $data);
+     *         
+     *         $this->sendResponse(array(
+     *             'success' => true,
+     *             'message' => 'Product updated successfully',
+     *             'product_id' => $productId
+     *         ));
+     *         
+     *     } catch (Exception $e) {
+     *         $this->sendResponse(array(
+     *             'success' => false,
+     *             'error' => $e->getMessage()
+     *         ), 500);
+     *     }
+     * }
+     */
     
     ///**
     // * Delete product
@@ -1058,6 +1271,7 @@ class ControllerApiProductApi extends Controller {
             ), 500);
         }
     }
+    
     // ==================== ATTRIBUTE OPERATIONS ====================
     
     /**
@@ -1561,5 +1775,3 @@ class ControllerApiProductApi extends Controller {
         }
     }
 }
-
-
