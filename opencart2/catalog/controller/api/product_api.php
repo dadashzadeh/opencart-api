@@ -1060,6 +1060,298 @@ class ControllerApiProductApi extends Controller {
     //        ), 500);
     //    }
     //}
+
+    // ==================== GET PRODUCTS BY CATEGORY ====================
+    
+    /**
+     * Get products by category ID or name
+     * 
+     * GET: /index.php?route=api/product_api/getProductsByCategory&category_id=25&api_key=xxx
+     * GET: /index.php?route=api/product_api/getProductsByCategory&category_name=موبایل&api_key=xxx
+     * 
+     * Required Fields:
+     * - category_id (int) OR category_name (string)
+     * 
+     * Optional Fields:
+     * - start (int) - Pagination offset (default: 0)
+     * - limit (int) - Results per page (default: 100, max: 100)
+     * - language_id (int) - Language ID (default: 2)
+     * 
+     * Response Example:
+     * {
+     *   "success": true,
+     *   "category_info": {
+     *     "category_id": 25,
+     *     "name": "موبایل",
+     *     "parent_id": 20
+     *   },
+     *   "data": [
+     *     {
+     *       "product_id": 42,
+     *       "name": "iPhone 15 Pro",
+     *       "model": "IP15P-128",
+     *       "sku": "APPLE-IP15P",
+     *       "quantity": 50,
+     *       "price": "999.00",
+     *       "status": 1
+     *     }
+     *   ],
+     *   "count": 15,
+     *   "total": 15
+     * }
+     */
+    public function getProductsByCategory() {
+        $this->authenticate();
+
+        try {
+            $categoryId = isset($this->request->get['category_id']) ? (int)$this->request->get['category_id'] : 0;
+            $categoryName = isset($this->request->get['category_name']) ? trim($this->request->get['category_name']) : '';
+            $start = isset($this->request->get['start']) ? (int)$this->request->get['start'] : 0;
+            $limit = isset($this->request->get['limit']) ? (int)$this->request->get['limit'] : 100;
+            $limit = min($limit, 100);
+
+            // Find category by name if ID not provided
+            if (!$categoryId && !empty($categoryName)) {
+                $catQuery = $this->db->query(
+                    "SELECT c.category_id 
+                     FROM " . DB_PREFIX . "category c
+                     LEFT JOIN " . DB_PREFIX . "category_description cd
+                        ON c.category_id = cd.category_id
+                     WHERE cd.language_id = '" . (int)$this->getLanguageId() . "'
+                     AND cd.name = '" . $this->db->escape($categoryName) . "'
+                     LIMIT 1"
+                );
+
+                if ($catQuery->num_rows > 0) {
+                    $categoryId = $catQuery->row['category_id'];
+                } else {
+                    $this->sendResponse(array(
+                        'success' => false,
+                        'error' => 'Category not found: ' . $categoryName
+                    ), 404);
+                    return;
+                }
+            }
+
+            if (!$categoryId) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'category_id or category_name is required'
+                ), 400);
+                return;
+            }
+
+            // Get category info
+            $catInfoQuery = $this->db->query(
+                "SELECT c.category_id, cd.name, c.parent_id, c.status
+                 FROM " . DB_PREFIX . "category c
+                 LEFT JOIN " . DB_PREFIX . "category_description cd
+                    ON c.category_id = cd.category_id
+                 WHERE c.category_id = '" . (int)$categoryId . "'
+                 AND cd.language_id = '" . (int)$this->getLanguageId() . "'"
+            );
+
+            if ($catInfoQuery->num_rows === 0) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'Category not found with ID: ' . $categoryId
+                ), 404);
+                return;
+            }
+
+            $categoryInfo = $catInfoQuery->row;
+
+            // Get products in category
+            $sql = "SELECT DISTINCT p.product_id, pd.name, p.model, p.sku, 
+                           p.quantity, p.price, p.status, p.image, p.date_added
+                    FROM " . DB_PREFIX . "product p
+                    LEFT JOIN " . DB_PREFIX . "product_description pd 
+                        ON p.product_id = pd.product_id
+                    LEFT JOIN " . DB_PREFIX . "product_to_category p2c
+                        ON p.product_id = p2c.product_id
+                    WHERE p2c.category_id = '" . (int)$categoryId . "'
+                    AND pd.language_id = '" . (int)$this->getLanguageId() . "'
+                    AND p.status = 1
+                    ORDER BY p.sort_order ASC, pd.name ASC
+                    LIMIT " . (int)$start . ", " . (int)$limit;
+
+            $query = $this->db->query($sql);
+
+            // ✅ بررسی نتیجه query
+            if (!$query) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'Database query failed'
+                ), 500);
+                return;
+            }
+
+            // Get total count
+            $countSql = "SELECT COUNT(DISTINCT p.product_id) as total
+                         FROM " . DB_PREFIX . "product p
+                         LEFT JOIN " . DB_PREFIX . "product_to_category p2c
+                            ON p.product_id = p2c.product_id
+                         WHERE p2c.category_id = '" . (int)$categoryId . "'
+                         AND p.status = 1";
+
+            $countQuery = $this->db->query($countSql);
+            $total = isset($countQuery->row['total']) ? (int)$countQuery->row['total'] : 0;
+
+            // ✅ مطمئن شویم rows یک array است
+            $products = isset($query->rows) && is_array($query->rows) ? $query->rows : array();
+
+            $this->sendResponse(array(
+                'success' => true,
+                'category_info' => $categoryInfo,
+                'data' => $products,
+                'count' => count($products),
+                'total' => $total
+            ));
+
+        } catch (Exception $e) {
+            $this->sendResponse(array(
+                'success' => false,
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine()
+            ), 500);
+        }
+    }
+
+    // ==================== GET MULTIPLE PRODUCTS BY IDS ====================
+    
+    /**
+     * Get multiple products by their IDs
+     * 
+     * GET: /index.php?route=api/product_api/getProductsByIds&product_ids=42,43,44&api_key=xxx
+     * POST: /index.php?route=api/product_api/getProductsByIds&api_key=xxx
+     * Body: {"product_ids": [42, 43, 44]}
+     * 
+     * Required Fields:
+     * - product_ids (string or array) - Comma-separated or array of product IDs
+     * 
+     * Optional Fields:
+     * - language_id (int) - Language ID (default: 2)
+     * 
+     * Response Example:
+     * {
+     *   "success": true,
+     *   "data": [
+     *     {
+     *       "product_id": 42,
+     *       "name": "iPhone 15 Pro",
+     *       "model": "IP15P-128",
+     *       "quantity": 50,
+     *       "price": "999.00",
+     *       "status": 1
+     *     },
+     *     {
+     *       "product_id": 43,
+     *       "name": "Samsung Galaxy S24",
+     *       "model": "SGS24-256",
+     *       "quantity": 30,
+     *       "price": "899.00",
+     *       "status": 1
+     *     }
+     *   ],
+     *   "count": 2,
+     *   "requested": 3,
+     *   "not_found": [44]
+     * }
+     */
+    public function getProductsByIds() {
+        $this->authenticate();
+        
+        try {
+            $productIds = array();
+            
+            // Get IDs from GET or POST
+            if (isset($this->request->get['product_ids'])) {
+                // GET: comma-separated
+                $productIds = array_map('intval', explode(',', $this->request->get['product_ids']));
+            } else {
+                // POST: JSON array
+                $jsonData = json_decode(file_get_contents('php://input'), true);
+                if (!$jsonData) {
+                    $jsonData = $this->request->post;
+                }
+                
+                if (isset($jsonData['product_ids'])) {
+                    if (is_array($jsonData['product_ids'])) {
+                        $productIds = array_map('intval', $jsonData['product_ids']);
+                    } else {
+                        $productIds = array_map('intval', explode(',', $jsonData['product_ids']));
+                    }
+                }
+            }
+            
+            // Remove invalid IDs
+            $productIds = array_filter($productIds, function($id) {
+                return $id > 0;
+            });
+            
+            if (empty($productIds)) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'product_ids is required (comma-separated or array)',
+                    'required_fields' => array('product_ids'),
+                    'examples' => array(
+                        'GET' => 'product_ids=42,43,44',
+                        'POST' => '{"product_ids": [42, 43, 44]}'
+                    )
+                ), 400);
+            }
+            
+            // Max 100 products
+            if (count($productIds) > 100) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'Maximum 100 product IDs allowed',
+                    'provided' => count($productIds)
+                ), 400);
+            }
+            
+            $requestedIds = $productIds;
+            $products = array();
+            $notFound = array();
+            
+            // Get products
+            $idsString = implode(',', $productIds);
+            $sql = "SELECT p.product_id, pd.name, p.model, p.sku, 
+                           p.quantity, p.price, p.status, p.image, p.date_added
+                    FROM " . DB_PREFIX . "product p
+                    LEFT JOIN " . DB_PREFIX . "product_description pd 
+                        ON p.product_id = pd.product_id
+                    WHERE p.product_id IN (" . $idsString . ")
+                    AND pd.language_id = '" . (int)$this->getLanguageId() . "'
+                    ORDER BY FIELD(p.product_id, " . $idsString . ")";
+            
+            $query = $this->db->query($sql);
+            
+            $foundIds = array();
+            foreach ($query->rows as $row) {
+                $products[] = $row;
+                $foundIds[] = $row['product_id'];
+            }
+            
+            // Find not found IDs
+            $notFound = array_values(array_diff($requestedIds, $foundIds));
+            
+            $this->sendResponse(array(
+                'success' => true,
+                'data' => $products,
+                'count' => count($products),
+                'requested' => count($requestedIds),
+                'not_found' => $notFound
+            ));
+            
+        } catch (Exception $e) {
+            $this->sendResponse(array(
+                'success' => false,
+                'error' => $e->getMessage()
+            ), 500);
+        }
+    }
     
 
     // ==================== CATEGORY OPERATIONS ====================
