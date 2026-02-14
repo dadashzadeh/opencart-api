@@ -621,6 +621,28 @@ class OpenCartAPI:
         
         return self._request('getAttribute', params={'attribute_id': attribute_id})
     
+    def get_all_attributes(self, start: int = 0, limit: int = 20) -> Dict[str, Any]:
+        """
+        Get All Attributes with pagination.
+        
+        Args:
+            start (int): Pagination start offset
+            limit (int): Number of results per page (max 100)
+            
+        Returns:
+            Dict containing attribute list
+            
+        Example:
+            >>> attributes = api.get_all_attribute(limit=10)
+        """
+        if limit > 100:
+            raise ValueError("Limit cannot exceed 100 items")
+        
+        return self._request('getAllAttributes', params={
+            'start': start,
+            'limit': limit
+        })
+
     def add_attribute(self, data: Dict[str, Any], encode_html: bool = False) -> Dict[str, Any]:
         """
         Add new attribute.
@@ -653,6 +675,28 @@ class OpenCartAPI:
     # ========================
     # ATTRIBUTE GROUP METHODS
     # ========================
+    
+    def get_all_attribute_groups(self, start: int = 0, limit: int = 20) -> Dict[str, Any]:
+        """
+        Get All Attribute Groups with pagination.
+        
+        Args:
+            start (int): Pagination start offset
+            limit (int): Number of results per page (max 100)
+            
+        Returns:
+            Dict containing attribute group list
+            
+        Example:
+            >>> attributes = api.get_all_attribute_groups(limit=10)
+        """
+        if limit > 100:
+            raise ValueError("Limit cannot exceed 100 items")
+        
+        return self._request('getAllAttributeGroups', params={
+            'start': start,
+            'limit': limit
+        })
     
     def search_attribute_groups(self, name: Optional[str] = None) -> Dict[str, Any]:
         """
