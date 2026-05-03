@@ -1693,14 +1693,14 @@ class ControllerApiProductApi extends Controller {
     
 
     /**
-     * ✅✅Update product information with COMPLETE field preservation
+     * Update product information with COMPLETE field preservation
      * POST: /index.php?route=api/product_api/updateProduct&product_id=123&api_key=xxx
      * Body: JSON with product data
      * 
-     * ✅ VERSION 1.1 - Enhanced with comprehensive relational data preservation
-     * ✅ Preserves ALL OpenCart relational fields (options, discounts, specials, etc.)
-     * ✅ Only updates fields that are explicitly provided in the request
-     * ✅ Compatible with future OpenCart versions
+     * VERSION 1.1 - Enhanced with comprehensive relational data preservation
+     * Preserves ALL OpenCart relational fields (options, discounts, specials, etc.)
+     * Only updates fields that are explicitly provided in the request
+     * Compatible with future OpenCart versions
      */
     public function updateProduct() {
         $this->authenticate();
@@ -1800,7 +1800,7 @@ class ControllerApiProductApi extends Controller {
             }
             
             // ========================================
-            // ✅✅✅ PRESERVE ALL RELATIONAL DATA ✅✅✅
+            //✅✅ PRESERVE ALL RELATIONAL DATA✅✅
             // This is the KEY FIX - preserves all relational tables
             // ========================================
             
@@ -1879,7 +1879,7 @@ class ControllerApiProductApi extends Controller {
             }
             
             // Recurring payment profiles (subscriptions)
-            // ✅ Fixed: Check method name and existence
+            // Fixed: Check method name and existence
             if (!isset($data['product_recurring'])) {
                 // Try singular form first (OpenCart standard)
                 if (method_exists($this->adminProductModel, 'getProductRecurring')) {
@@ -1923,7 +1923,7 @@ class ControllerApiProductApi extends Controller {
     }
     
     /**
-     * ✅ OPTIONAL: Helper method to get all relational data (FUTURE-PROOF approach)
+     * OPTIONAL: Helper method to get all relational data (FUTURE-PROOF approach)
      * 
      * This method automatically detects and retrieves all known relational fields.
      * If OpenCart adds new fields in future versions, just add them to this array.
@@ -1968,7 +1968,7 @@ class ControllerApiProductApi extends Controller {
     }
     
     /**
-     * ✅ ALTERNATIVE updateProduct() using the helper method
+     * ALTERNATIVE updateProduct() using the helper method
      * Uncomment this version if you prefer the cleaner approach
      * 
      * public function updateProduct() {
@@ -2018,7 +2018,7 @@ class ControllerApiProductApi extends Controller {
      *             $data['product_attribute'] = $this->adminProductModel->getProductAttributes($productId);
      *         }
      *         
-     *         // ✅ Smart preservation of all relational data
+     *         // Smart preservation of all relational data
      *         $relationalData = $this->getProductRelationalData($productId);
      *         foreach ($relationalData as $field => $value) {
      *             if (!isset($data[$field])) {
@@ -2202,7 +2202,7 @@ class ControllerApiProductApi extends Controller {
 
             $query = $this->db->query($sql);
 
-            // ✅ بررسی نتیجه query
+            // بررسی نتیجه query
             if (!$query) {
                 $this->sendResponse(array(
                     'success' => false,
@@ -2222,7 +2222,7 @@ class ControllerApiProductApi extends Controller {
             $countQuery = $this->db->query($countSql);
             $total = isset($countQuery->row['total']) ? (int)$countQuery->row['total'] : 0;
 
-            // ✅ مطمئن شویم rows یک array است
+            // مطمئن شویم rows یک array است
             $products = isset($query->rows) && is_array($query->rows) ? $query->rows : array();
 
             $this->sendResponse(array(
