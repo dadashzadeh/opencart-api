@@ -669,7 +669,7 @@ class ControllerApiProductApi extends Controller {
      * Upload image with support for all formats (JPG, PNG, GIF, WebP, BMP)
      * Works with PHP 5.6+ and OpenCart 2.x/3.x
      * 
-     * ✅ NEW: Supports custom filenames - preserves original or uses provided name
+     * Supports custom filenames - preserves original or uses provided name
      * 
      * Endpoint: POST /index.php?route=api/product_api/uploadImage&api_key=xxx
      * 
@@ -1020,7 +1020,7 @@ class ControllerApiProductApi extends Controller {
     // ==================== PRIVATE IMAGE HELPER METHODS ====================
     
     /**
-     * ✅ UPDATED: Upload file from $_FILES array with custom filename support
+     * Upload file from $_FILES array with custom filename support
      * PHP 5.6+ compatible with enhanced WebP detection
      * 
      * @param array $file               $_FILES array element
@@ -1080,7 +1080,7 @@ class ControllerApiProductApi extends Controller {
             );
         }
         
-        // ✅ NEW: Determine final filename
+        // Determine final filename
         $extension = $this->getExtensionFromMime($actualMime);
         $filename = $this->determineFilename($customFilename, $originalFilename, $extension, $preserveOriginal, $subfolder);
         
@@ -1129,7 +1129,7 @@ class ControllerApiProductApi extends Controller {
     }
     
     /**
-     * ✅ NEW: Determine final filename based on priority
+     * Determine final filename based on priority
      * 
      * Priority order:
      * 1. Custom filename provided
@@ -1191,7 +1191,7 @@ class ControllerApiProductApi extends Controller {
     }
     
     /**
-     * ✅ NEW: Sanitize filename - remove invalid characters
+     * Sanitize filename - remove invalid characters
      * Keeps: alphanumeric, dashes, underscores
      * Converts: spaces to dashes
      * Removes: special characters
@@ -1689,7 +1689,7 @@ class ControllerApiProductApi extends Controller {
     
 
     /**
-     * ✅✅✅ UPDATED: Update product information with COMPLETE field preservation
+     * ✅✅Update product information with COMPLETE field preservation
      * POST: /index.php?route=api/product_api/updateProduct&product_id=123&api_key=xxx
      * Body: JSON with product data
      * 
@@ -1835,10 +1835,6 @@ class ControllerApiProductApi extends Controller {
                 $data['product_image'] = $this->adminProductModel->getProductImages($productId);
             }
             
-            // ========================================
-            // ✅✅✅ CRITICAL FIELDS - NEWLY ADDED ✅✅✅
-            // These fields were MISSING in the original code
-            // ========================================
             
             // Product Options (size, color dropdowns, radio buttons, checkboxes, etc.)
             // ⚠️ THIS WAS THE MAIN BUG - Options were being deleted!
