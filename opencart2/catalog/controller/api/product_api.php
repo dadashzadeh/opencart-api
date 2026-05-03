@@ -201,7 +201,7 @@ class ControllerApiProductApi extends Controller {
      */
     private function sendResponse($data, $statusCode = 200) {
         http_response_code($statusCode);
-        echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         exit;
     }
     
@@ -578,6 +578,9 @@ class ControllerApiProductApi extends Controller {
             $attributes = $this->adminProductModel->getProductAttributes($productId);
             $relatedIds = $this->adminProductModel->getProductRelated($productId);
             $categoryIds = $this->adminProductModel->getProductCategories($productId);
+
+            // product GALLERY (additional images)
+            $gallery = $this->adminProductModel->getProductImages($productId);
             
             // Get related products with names
             $relatedProducts = array();
@@ -644,6 +647,7 @@ class ControllerApiProductApi extends Controller {
                 'model' => $product['model'],
                 'status' => $product['status'],
                 'image' => $product['image'],
+                'gallery' => $gallery,
                 'descriptions' => $descriptions,
                 'attributes' => $formattedAttributes,
                 'related_products' => $relatedProducts,
