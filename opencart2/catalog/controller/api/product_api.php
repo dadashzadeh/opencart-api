@@ -33,29 +33,68 @@ class ControllerApiProductApi extends Controller {
     }
     
     /**
-     * Auto-detect and load admin models from any storage location
+     * Load admin models with priority: modification/storage first, then original admin
+     * Each model file is searched separately
      */
     private function loadAdminModels() {
-        $modelPath = $this->findAdminModelPath();
-        
-        if (empty($modelPath)) {
+        $searchPaths = $this->getOrderedSearchPaths(); // modification paths first
+    
+        // Load product model
+        $productPath = $this->findFirstExistingFile($searchPaths, 'product.php');
+        if (!$productPath) {
             $this->sendResponse(array(
                 'success' => false,
-                'error' => 'Admin model files not found. Searched in all possible locations.',
-                'searched_paths' => $this->getSearchPaths()
+                'error' => 'product.php not found in any search path'
             ), 500);
             exit;
         }
-        
-        // Include admin model files
-        require_once($modelPath . 'product.php');
-        require_once($modelPath . 'attribute.php');
-        require_once($modelPath . 'attribute_group.php');
-        
-        // Create instances
+        require_once($productPath);
         $this->adminProductModel = new ModelCatalogProduct($this->registry);
+    
+        // Load attribute model
+        $attributePath = $this->findFirstExistingFile($searchPaths, 'attribute.php');
+        if (!$attributePath) {
+            $this->sendResponse(array(
+                'success' => false,
+                'error' => 'attribute.php not found in any search path'
+            ), 500);
+            exit;
+        }
+        require_once($attributePath);
         $this->adminAttributeModel = new ModelCatalogAttribute($this->registry);
+    
+        // Load attribute group model
+        $attributeGroupPath = $this->findFirstExistingFile($searchPaths, 'attribute_group.php');
+        if (!$attributeGroupPath) {
+            $this->sendResponse(array(
+                'success' => false,
+                'error' => 'attribute_group.php not found in any search path'
+            ), 500);
+            exit;
+        }
+        require_once($attributeGroupPath);
         $this->adminAttributeGroupModel = new ModelCatalogAttributeGroup($this->registry);
+    }
+
+    /**
+     * Returns all possible search paths with modification/storage paths first
+     * Restricts search to current installation only (no parent directories outside the site root)
+     */
+    private function getOrderedSearchPaths() {
+        $allPaths = $this->getSearchPaths();
+        
+        $priorityPaths = array();
+        $otherPaths = array();
+        
+        foreach ($allPaths as $path) {
+            if (strpos($path, 'modification') !== false || strpos($path, 'storage') !== false) {
+                $priorityPaths[] = $path;
+            } else {
+                $otherPaths[] = $path;
+            }
+        }
+        
+        return array_merge($priorityPaths, $otherPaths);
     }
     
     /**
@@ -82,72 +121,79 @@ class ControllerApiProductApi extends Controller {
     
     /**
      * Get all possible paths where admin models might be located
+     * Now restricted to the current OpenCart installation (no parent directories above site root)
      * @return array List of paths to search
      */
     private function getSearchPaths() {
         $paths = array();
         
-        // Get base directory (opencart root)
-        $baseDir = DIR_APPLICATION . '../';
+        // Define the site root based on DIR_APPLICATION (e.g., /home/.../public_html/test/catalog/)
+        $siteRoot = realpath(DIR_APPLICATION . '../');
+        if (!$siteRoot) {
+            $siteRoot = dirname(DIR_APPLICATION);
+        }
         
-        // 1. Check if DIR_STORAGE is defined in config (OpenCart 3.x+)
+        // 1. Check if DIR_STORAGE is defined (OpenCart 3.x+)
         if (defined('DIR_STORAGE')) {
             $paths[] = DIR_STORAGE . 'modification/admin/model/catalog/';
         }
         
-        // 2. Common storage locations relative to catalog
+        // 2. Common storage locations relative to the site root (NOT going above it)
         $storageLocations = array(
             'system/storage/modification/admin/model/catalog/',
             'storage/modification/admin/model/catalog/',
-            '../storage/modification/admin/model/catalog/',
-            '../../storage/modification/admin/model/catalog/',
-            '../system/storage/modification/admin/model/catalog/',
         );
         
         foreach ($storageLocations as $location) {
-            $paths[] = $baseDir . $location;
+            $fullPath = $siteRoot . '/' . $location;
+            $realPath = realpath($fullPath);
+            if ($realPath !== false && strpos($realPath, $siteRoot) === 0) {
+                $paths[] = $realPath . '/';
+            }
         }
         
         // 3. Direct admin folder (fallback if no modifications)
-        $paths[] = $baseDir . 'admin/model/catalog/';
-        
-        // 4. Search in parent directories (for custom installations)
-        $currentDir = realpath(DIR_APPLICATION);
-        $maxLevels = 5; // Search up to 5 levels up
-        
-        for ($i = 0; $i < $maxLevels; $i++) {
-            $currentDir = dirname($currentDir);
-            
-            // Check storage in current level
-            $paths[] = $currentDir . '/storage/modification/admin/model/catalog/';
-            $paths[] = $currentDir . '/system/storage/modification/admin/model/catalog/';
-            
-            // Stop if we reach root
-            if ($currentDir == dirname($currentDir)) {
-                break;
-            }
+        $adminPath = $siteRoot . '/admin/model/catalog/';
+        $realAdmin = realpath($adminPath);
+        if ($realAdmin !== false && strpos($realAdmin, $siteRoot) === 0) {
+            $paths[] = $realAdmin . '/';
         }
         
-        // 5. Absolute path search (if OpenCart is not in default location)
+        // 4. Use DIR_SYSTEM if defined
         if (defined('DIR_SYSTEM')) {
-            $systemDir = rtrim(DIR_SYSTEM, '/');
-            $paths[] = $systemDir . '/storage/modification/admin/model/catalog/';
-        }
-        
-        // Remove duplicates and normalize paths
-        $paths = array_unique($paths);
-        $normalizedPaths = array();
-        
-        foreach ($paths as $path) {
-            $realPath = realpath($path);
-            if ($realPath !== false) {
-                $normalizedPaths[] = $realPath . '/';
-            } else {
-                $normalizedPaths[] = $path;
+            $systemRoot = realpath(DIR_SYSTEM);
+            if ($systemRoot && strpos($systemRoot, $siteRoot) === 0) {
+                $paths[] = $systemRoot . '/storage/modification/admin/model/catalog/';
             }
         }
         
-        return array_unique($normalizedPaths);
+        // Remove duplicates and only keep paths that are inside the site root
+        $paths = array_unique($paths);
+        $validPaths = array();
+        foreach ($paths as $path) {
+            $real = realpath($path);
+            if ($real !== false && strpos($real, $siteRoot) === 0) {
+                $validPaths[] = $real . '/';
+            }
+        }
+        
+        return $validPaths;
+    }
+    
+    /**
+     * Find the first existing file in the given list of directories
+     * @param array $directories List of directory paths
+     * @param string $filename File name to look for
+     * @return string|false Full path if found, false otherwise
+     */
+    private function findFirstExistingFile($directories, $filename) {
+        foreach ($directories as $dir) {
+            $fullPath = rtrim($dir, '/') . '/' . $filename;
+            if (file_exists($fullPath)) {
+                return $fullPath;
+            }
+        }
+        return false;
     }
     
     /**
