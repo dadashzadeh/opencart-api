@@ -489,7 +489,59 @@ class OpenCartAPI:
         return self._request('updateProduct', 'POST', data, {
             'product_id': product_id
         })
-    
+        
+    def update_dynamic_fields(self,table: str, record_id: int, fields: Dict[str, Any], language_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Update dynamic fields in any OpenCart table.
+        
+        Args:
+            table (str): Table name (e.g., 'product', 'product_description', 'category')
+            record_id (int): Record ID (auto-detects primary key)
+            fields (Dict): Field names and values to update
+            language_id (Optional[int]): Language ID for multi-language tables
+            
+        Returns:
+            Dict with update result
+            
+        Example:
+            >>> # Update product_description
+            >>> api.update_dynamic_fields(
+            ...     table='product_description',
+            ...     record_id=42,
+            ...     fields={
+            ...         'tab_title': 'اطلاعات تکمیلی',
+            ...         'html_product_tab': '<h2>مدل‌های سازگار</h2>'
+            ...     },
+            ...     language_id=2
+            ... )
+            
+            >>> # Update product
+            >>> api.update_dynamic_fields(
+            ...     table='product',
+            ...     record_id=42,
+            ...     fields={'quantity': 100, 'price': '999.99'}
+            ... )
+        """
+        if not table or not isinstance(table, str):
+            raise ValueError("Table name is required")
+        
+        if not isinstance(record_id, int) or record_id <= 0:
+            raise ValueError("Invalid record ID")
+        
+        if not fields or not isinstance(fields, dict):
+            raise ValueError("Fields must be a non-empty dictionary")
+        
+        payload = {
+            'table': table,
+            'id': record_id,
+            'fields': fields
+        }
+        
+        if language_id is not None:
+            payload['language_id'] = int(language_id)
+        
+        return self._request('updateDynamicFields', 'POST', payload)
+        
     # ==================
     # ATTRIBUTE METHODS
     # ==================
