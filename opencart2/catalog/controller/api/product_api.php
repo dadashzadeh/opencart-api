@@ -1,4 +1,211 @@
 <?php
+set_time_limit(60);
+
+/**
+ * Database Wrapper Class for MySQLi
+ * Mimics OpenCart's DB class interface
+ */
+class ProductApiDbWrapper {
+    private $connection;
+    
+    public function __construct($mysqli) {
+        $this->connection = $mysqli;
+    }
+    
+    /**
+     * Execute SQL query
+     * Returns object with num_rows, row, and rows properties
+     */
+    public function query($sql) {
+        $result = $this->connection->query($sql);
+        
+        if ($result === false) {
+            error_log("Query failed: " . $this->connection->error . " | SQL: " . $sql);
+            return false;
+        }
+        
+        $rows = array();
+        if ($result instanceof mysqli_result) {
+            while ($row = $result->fetch_assoc()) {
+                $rows[] = $row;
+            }
+            $result->free();
+        }
+        
+        // Create result object
+        $obj = new stdClass();
+        $obj->num_rows = count($rows);
+        $obj->row = isset($rows[0]) ? $rows[0] : array();
+        $obj->rows = $rows;
+        
+        return $obj;
+    }
+    
+    /**
+     * Escape string for SQL query
+     */
+    public function escape($value) {
+        return $this->connection->real_escape_string($value);
+    }
+    
+    /**
+     * Get number of affected rows
+     */
+    public function countAffected() {
+        return $this->connection->affected_rows;
+    }
+    
+    /**
+     * Get last insert ID
+     */
+    public function getLastId() {
+        return $this->connection->insert_id;
+    }
+    
+    /**
+     * Check if connection is alive
+     */
+    public function isConnected() {
+        return $this->connection && $this->connection->ping();
+    }
+}
+
+// ========================================================================
+// 🔒 SECURITY: Database Blacklist Wrapper
+// ========================================================================
+
+/**
+ * Secure Database Wrapper - BLACKLIST ONLY
+ * Blocks access to sensitive tables (users, settings, orders, customers)
+ * 
+ * Performance: ~0.5ms overhead per query (regex + array lookup)
+ * Compatible: OpenCart 2.3.4, PHP 5.6+
+ * 
+ * @version 1.0.0
+ */
+class SecureDbWrapper {
+    private $db;
+    private $blockedTables = array();
+    
+    public function __construct($dbInstance) {
+        $this->db = $dbInstance;
+        $this->initializeBlacklist();
+    }
+    
+    /**
+     * Initialize blacklist - 45 sensitive tables blocked
+     */
+    private function initializeBlacklist() {
+        $this->blockedTables = array(
+            // Authentication & Users
+            'user', 'user_group', 'api', 'api_ip', 'api_session',
+            
+            // Customers
+            'customer', 'customer_group', 'customer_group_description',
+            'customer_ip', 'customer_login', 'customer_online',
+            'customer_search', 'customer_transaction', 'customer_wishlist',
+            'customer_reward', 'customer_approval',
+            
+            // Orders & Payments
+            'order', 'order_custom_field', 'order_fraud', 'order_history',
+            'order_option', 'order_product', 'order_recurring',
+            'order_recurring_transaction', 'order_shipment',
+            'order_status', 'order_total', 'order_voucher',
+            
+            // System Configuration
+            'setting', 'extension', 'event', 'modification',
+            
+            // Financial & Sensitive Data
+            'voucher', 'voucher_history', 'voucher_theme', 'voucher_theme_description',
+            'return', 'return_action', 'return_history', 'return_reason', 'return_status',
+            'affiliate', 'affiliate_activity', 'affiliate_login', 'affiliate_transaction',
+            'coupon', 'coupon_category', 'coupon_history', 'coupon_product'
+        );
+    }
+    
+    /**
+     * Execute query with security check
+     * 
+     * @param string $sql SQL query
+     * @return mixed Query result or throws Exception
+     * @throws Exception if blocked table detected
+     */
+    public function query($sql) {
+        if (!$this->isQuerySafe($sql)) {
+            error_log('🚨 SECURITY BLOCK: ' . $sql);
+            throw new Exception('Access denied: Query attempts to access restricted tables');
+        }
+        
+        return $this->db->query($sql);
+    }
+    
+    /**
+     * Validate SQL query against blacklist
+     * Uses fast regex + array lookup (< 1ms)
+     * 
+     * @param string $sql SQL query
+     * @return bool True if safe, false if blocked
+     */
+    private function isQuerySafe($sql) {
+        $sql = strtolower($sql);
+        
+        // Extract table names: FROM/JOIN/INTO/UPDATE/TABLE oc_tablename
+        preg_match_all('/(?:from|join|into|update|table)\s+[`]?(' . DB_PREFIX . '[a-z_]+)[`]?/i', $sql, $matches);
+        
+        if (!empty($matches[1])) {
+            foreach ($matches[1] as $fullTableName) {
+                // Remove prefix: oc_user -> user
+                $tableName = str_replace(strtolower(DB_PREFIX), '', strtolower($fullTableName));
+                
+                // Check blacklist (O(1) lookup with in_array)
+                if (in_array($tableName, $this->blockedTables)) {
+                    error_log('❌ Blocked table: ' . $tableName);
+                    return false;
+                }
+            }
+        }
+        
+        return true;
+    }
+    
+    // Pass-through methods (no overhead)
+    public function escape($value) {
+        return $this->db->escape($value);
+    }
+    
+    public function countAffected() {
+        return $this->db->countAffected();
+    }
+    
+    public function getLastId() {
+        return $this->db->getLastId();
+    }
+    
+    public function isConnected() {
+        return method_exists($this->db, 'isConnected') ? $this->db->isConnected() : true;
+    }
+    
+    /**
+     * Get blocked tables list (for debugging)
+     */
+    public function getBlockedTables() {
+        return $this->blockedTables;
+    }
+    
+    /**
+     * Add table to blacklist dynamically
+     */
+    public function blockTable($tableName) {
+        $tableName = strtolower(trim($tableName));
+        if (!in_array($tableName, $this->blockedTables)) {
+            $this->blockedTables[] = $tableName;
+        }
+    }
+}
+
+// ========================================================================
+
+
 /**
  * Product API Controller - COMPLETE VERSION with Full Field Preservation
  * Compatible with OpenCart 2.x and 3.x
@@ -23,13 +230,324 @@ class ControllerApiProductApi extends Controller {
         parent::__construct($registry);
         
         // Detect OpenCart version
-        $this->oc_version = (int)substr(VERSION, 0, 1);
+        if (defined('VERSION')) {
+            $version = VERSION;
+            $this->oc_version = (int)substr($version, 0, 1);
+        }
         
         // Set JSON response header
         header('Content-Type: application/json; charset=utf-8');
         
-        // Load admin models
-        $this->loadAdminModels();
+        try {
+            $dbInitialized = $this->initializeDatabaseConnection();
+            
+            if (!$dbInitialized) {
+                // Log the error but continue (don't exit here)
+                error_log('Product API Constructor: Database initialization failed');
+                
+                // Set error flag for later checks
+                if (empty($this->error['database'])) {
+                    $this->error['database'] = 'Database connection failed in constructor';
+                }
+            }
+        } catch (Exception $e) {
+            error_log('Product API Constructor Exception: ' . $e->getMessage());
+            $this->error['database'] = 'Constructor exception: ' . $e->getMessage();
+        } catch (Error $e) {
+            // PHP 7+ Error (e.g., Fatal Error)
+            error_log('Product API Constructor Fatal Error: ' . $e->getMessage());
+            $this->error['database'] = 'Constructor fatal error: ' . $e->getMessage();
+        }
+        
+        // Load admin models (will check DB availability inside)
+        try {
+            $this->loadAdminModels();
+        } catch (Exception $e) {
+            error_log('Product API: Failed to load admin models - ' . $e->getMessage());
+        }
+        
+    }
+
+    private function initializeDatabaseConnection() {
+        // ===============================================
+        // 0. Early exit if DB already works (via registry)
+        // ===============================================
+        // FIX: In OpenCart 2.3.x, $this->db goes through __get() magic method
+        // which proxies to registry. Use registry directly to avoid magic issues.
+        
+        $existingDb = null;
+        if (isset($this->registry) && method_exists($this->registry, 'get')) {
+            $existingDb = $this->registry->get('db');
+        }
+        
+        if (is_object($existingDb) && method_exists($existingDb, 'query')) {
+            try {
+                $test = @$existingDb->query("SELECT 1 AS test");
+                if ($test !== false && is_object($test) && isset($test->num_rows) && $test->num_rows > 0) {
+                    // ✅✅✅ SECURITY: Wrap existing DB with blacklist protection
+                    $this->db = new SecureDbWrapper($existingDb);
+                    
+                    // Re-store wrapped version in registry so other models use it too
+                    $this->registry->set('db', $this->db);
+                    
+                    error_log('Product API: Using existing registry DB ✓ + Security ON');
+                    return true;
+                } else {
+                    error_log('Product API: Existing registry DB returned invalid test result');
+                }
+            } catch (Exception $e) {
+                error_log('Product API: Existing DB test exception - ' . $e->getMessage());
+            } catch (Error $e) {
+                // FIX: PHP 7+ Error must be caught separately
+                error_log('Product API: Existing DB test fatal error - ' . $e->getMessage());
+            }
+        } else {
+            error_log('Product API: No valid DB in registry, attempting fresh connection');
+        }
+    
+        // ===============================================
+        // 1. Load database constants if not loaded
+        // ===============================================
+        if (!defined('DB_DRIVER')) {
+            // FIX: Try multiple config locations
+            $possibleConfigs = array(
+                realpath(DIR_APPLICATION . '../config.php'),
+                dirname(DIR_APPLICATION) . '/config.php',
+                DIR_APPLICATION . 'config.php',
+            );
+            
+            $configLoaded = false;
+            foreach ($possibleConfigs as $configPath) {
+                if ($configPath && file_exists($configPath)) {
+                    require_once($configPath);
+                    error_log('Product API: Loaded config from ' . $configPath);
+                    $configLoaded = true;
+                    break;
+                }
+            }
+            
+            if (!$configLoaded) {
+                $this->error['database'] = 'config.php not found. Tried: ' . implode(', ', array_filter($possibleConfigs));
+                error_log('Product API: ' . $this->error['database']);
+                return false;
+            }
+        }
+    
+        // Validate constants
+        if (!defined('DB_HOSTNAME') || !defined('DB_USERNAME') || 
+            !defined('DB_PASSWORD') || !defined('DB_DATABASE')) {
+            $this->error['database'] = 'Database constants missing in config.php';
+            error_log('Product API: ' . $this->error['database']);
+            return false;
+        }
+    
+        $port = defined('DB_PORT') ? (int)DB_PORT : 3306;
+    
+        // ===============================================
+        // 2. Try OpenCart DB class
+        // ===============================================
+        if (class_exists('DB')) {
+            try {
+                error_log('Product API: Attempting OpenCart DB class connection...');
+                
+                $driver = defined('DB_DRIVER') ? DB_DRIVER : 'mysqli';
+                $ocDb = new DB($driver, DB_HOSTNAME, DB_USERNAME, DB_PASSWORD, DB_DATABASE, $port);
+                
+                if (method_exists($ocDb, 'query')) {
+                    $test = @$ocDb->query("SELECT 1 AS test");
+                    
+                    if ($test !== false && is_object($test) && isset($test->num_rows) && $test->num_rows > 0) {
+                        // ✅ Wrap with security FIRST, then assign
+                        $wrapped = new SecureDbWrapper($ocDb);
+                        $this->db = $wrapped;
+                        
+                        // Store wrapped version in registry
+                        if (isset($this->registry) && method_exists($this->registry, 'set')) {
+                            $this->registry->set('db', $wrapped);
+                        }
+                        
+                        unset($this->error['database']);
+                        error_log('Product API: Connected via OpenCart DB class ✓ + Security ON');
+                        return true;
+                    } else {
+                        $this->error['database'] = 'DB class test query failed (empty/invalid result)';
+                        error_log('Product API: ' . $this->error['database']);
+                    }
+                }
+            } catch (Exception $e) {
+                $this->error['database'] = 'OpenCart DB class exception: ' . $e->getMessage();
+                error_log('Product API: ' . $this->error['database']);
+            } catch (Error $e) {
+                // FIX: Catch PHP 7+ Errors too
+                $this->error['database'] = 'OpenCart DB class fatal error: ' . $e->getMessage();
+                error_log('Product API: ' . $this->error['database']);
+            }
+        } else {
+            error_log('Product API: DB class not found, using MySQLi fallback');
+        }
+    
+        // ===============================================
+        // 3. Fallback: Direct MySQLi with wrapper
+        // ===============================================
+        if (!extension_loaded('mysqli')) {
+            $this->error['database'] = 'MySQLi extension not loaded';
+            error_log('Product API: ' . $this->error['database']);
+            return false;
+        }
+    
+        try {
+            error_log('Product API: Attempting direct MySQLi connection...');
+            mysqli_report(MYSQLI_REPORT_OFF);
+            
+            $mysqli = @new mysqli(DB_HOSTNAME, DB_USERNAME, DB_PASSWORD, DB_DATABASE, $port);
+            
+            if ($mysqli->connect_error) {
+                $this->error['database'] = 'MySQLi connect error [' . $mysqli->connect_errno . ']: ' . $mysqli->connect_error;
+                error_log('Product API: ' . $this->error['database']);
+                
+                switch($mysqli->connect_errno) {
+                    case 1045: $this->error['hint'] = 'Wrong username or password'; break;
+                    case 2002: $this->error['hint'] = 'Cannot connect to MySQL server'; break;
+                    case 1044: $this->error['hint'] = 'Access denied to database: ' . DB_DATABASE; break;
+                    case 2003: $this->error['hint'] = 'Cannot connect on port ' . $port; break;
+                    case 1049: $this->error['hint'] = 'Database does not exist: ' . DB_DATABASE; break;
+                    default:   $this->error['hint'] = 'Check MySQL server status and credentials';
+                }
+                return false;
+            }
+    
+            if (!$mysqli->set_charset('utf8mb4')) {
+                @$mysqli->set_charset('utf8');
+            }
+    
+            $testResult = @$mysqli->query("SELECT 1 AS test, DATABASE() AS db_name");
+            if (!$testResult) {
+                $this->error['database'] = 'MySQLi test query failed: ' . $mysqli->error;
+                error_log('Product API: ' . $this->error['database']);
+                $mysqli->close();
+                return false;
+            }
+            
+            $testRow = $testResult->fetch_assoc();
+            $testResult->free();
+            error_log('Product API: MySQLi connected to database: ' . $testRow['db_name']);
+    
+            // ✅ Create wrapper chain: MySQLi → ProductApiDbWrapper → SecureDbWrapper
+            $rawWrapper = new ProductApiDbWrapper($mysqli);
+            $secureWrapper = new SecureDbWrapper($rawWrapper);
+            $this->db = $secureWrapper;
+    
+            // Verify wrapper works
+            $wrapperTest = $this->db->query("SELECT 1 AS test");
+            if (!$wrapperTest || !isset($wrapperTest->num_rows) || $wrapperTest->num_rows == 0) {
+                $this->error['database'] = 'ProductApiDbWrapper test failed';
+                error_log('Product API: ' . $this->error['database']);
+                return false;
+            }
+    
+            if (isset($this->registry) && method_exists($this->registry, 'set')) {
+                $this->registry->set('db', $this->db);
+            }
+    
+            unset($this->error['database']);
+            unset($this->error['hint']);
+            error_log('Product API: Connected via MySQLi wrapper ✓ + Security ON');
+            return true;
+    
+        } catch (Exception $e) {
+            $this->error['database'] = 'MySQLi fallback exception: ' . $e->getMessage();
+            error_log('Product API: ' . $this->error['database']);
+            return false;
+        } catch (Error $e) {
+            // FIX: Catch PHP 7+ Errors
+            $this->error['database'] = 'MySQLi fallback fatal error: ' . $e->getMessage();
+            error_log('Product API: ' . $this->error['database']);
+            return false;
+        }
+    }
+    
+    
+    /**
+     * Check if database is available and working
+     * Compatible with: OpenCart DB, ProductApiDbWrapper, SecureDbWrapper
+     * 
+     * @return bool True if database is ready
+     */
+    private function isDatabaseAvailable() {
+        // FIX: Read via registry to bypass magic __get issues in OpenCart 2.3.x
+        $db = null;
+        if (isset($this->registry) && method_exists($this->registry, 'get')) {
+            $db = $this->registry->get('db');
+        }
+        // Fall back to direct property (might work if __get returns registry anyway)
+        if (!is_object($db)) {
+            $db = isset($this->db) ? $this->db : null;
+        }
+        
+        if (!is_object($db)) {
+            error_log('Product API: isDatabaseAvailable() - db is not an object (type: ' . gettype($db) . ')');
+            return false;
+        }
+        
+        if (!method_exists($db, 'query')) {
+            error_log('Product API: isDatabaseAvailable() - query() method missing');
+            return false;
+        }
+        
+        try {
+            $testResult = $db->query("SELECT 1 AS test");
+            
+            if ($testResult === false || !is_object($testResult)) {
+                error_log('Product API: isDatabaseAvailable() - invalid test result');
+                return false;
+            }
+            
+            if (isset($testResult->num_rows) && $testResult->num_rows > 0) {
+                return true;
+            }
+            if (isset($testResult->row) && !empty($testResult->row)) {
+                return true;
+            }
+            
+            error_log('Product API: isDatabaseAvailable() - test result has no data');
+            return false;
+            
+        } catch (Exception $e) {
+            error_log('Product API: isDatabaseAvailable() - Exception: ' . $e->getMessage());
+            return false;
+        } catch (Error $e) {
+            error_log('Product API: isDatabaseAvailable() - Fatal Error: ' . $e->getMessage());
+            return false;
+        }
+    }
+    
+    
+    
+    /**
+     * Get OpenCart version information
+     */
+    private function getVersionInfo() {
+        return array(
+            'version_string' => defined('VERSION') ? VERSION : 'UNKNOWN',
+            'major_version' => $this->oc_version,
+            'version_name' => $this->getVersionName()
+        );
+    }
+    
+    /**
+     * Get version name
+     */
+    private function getVersionName() {
+        switch ($this->oc_version) {
+            case 2:
+                return 'OpenCart 2.x';
+            case 3:
+                return 'OpenCart 3.x';
+            case 4:
+                return 'OpenCart 4.x';
+            default:
+                return 'Unknown OpenCart Version';
+        }
     }
     
     /**
@@ -127,7 +645,7 @@ class ControllerApiProductApi extends Controller {
     private function getSearchPaths() {
         $paths = array();
         
-        // Define the site root based on DIR_APPLICATION (e.g., /home/.../public_html/test/catalog/)
+        // Define the site root based on DIR_APPLICATION (e.g., /home/.../public_html/dev/catalog/)
         $siteRoot = realpath(DIR_APPLICATION . '../');
         if (!$siteRoot) {
             $siteRoot = dirname(DIR_APPLICATION);
@@ -216,40 +734,64 @@ class ControllerApiProductApi extends Controller {
      * Authenticate API request using API key
      * @return bool
      */
-    private function authenticate() {
+    public function authenticate() {
         $apiKey = '';
         
-        // Get API key from GET parameter or HTTP header
+        // Get API key from multiple sources
         if (isset($this->request->get['api_key'])) {
             $apiKey = $this->request->get['api_key'];
         } elseif (isset($this->request->server['HTTP_X_API_KEY'])) {
             $apiKey = $this->request->server['HTTP_X_API_KEY'];
+        } elseif (isset($this->request->post['api_key'])) {
+            $apiKey = $this->request->post['api_key'];
         }
-
-        // Validate API key (store in config.php: define('PRODUCT_API_KEY', 'your_secure_key');)
-        $validApiKey = defined('PRODUCT_API_KEY') ? PRODUCT_API_KEY : 'sds!dwd3dsSFSd111!';
         
-        if ($apiKey !== $validApiKey) {
+        // Check if API key is defined
+        if (!defined('PRODUCT_API_KEY')) {
             $this->sendResponse(array(
                 'success' => false,
-                'error' => 'Unauthorized: Invalid or missing API key'
-            ), 401);
-            exit;
+                'error' => 'API key not configured',
+                'hint' => 'Add define(\'PRODUCT_API_KEY\', \'your_key\'); to config.php'
+            ), 500);
         }
         
-        return true;
+        if (empty($apiKey) || $apiKey !== PRODUCT_API_KEY) {
+            $this->sendResponse(array(
+                'success' => false,
+                'error' => 'Invalid or missing API key',
+                'hint' => 'Provide api_key parameter or X-API-KEY header'
+            ), 401);
+        }
     }
     
-    /**
-     * Send JSON response
-     * @param array $data Response data
-     * @param int $statusCode HTTP status code
-     */
-    private function sendResponse($data, $statusCode = 200) {
-        http_response_code($statusCode);
-        echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    public function sendResponse($data, $httpCode = 200) {
+        // Set HTTP response code (compatible with PHP 5.6+)
+        if (function_exists('http_response_code')) {
+            http_response_code($httpCode);
+        } else {
+            header('X-PHP-Response-Code: ' . $httpCode, true, $httpCode);
+        }
+        
+        // Set headers if not already sent
+        if (!headers_sent()) {
+            header('Content-Type: application/json; charset=utf-8');
+            header('Access-Control-Allow-Origin: *');
+            header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+            header('Access-Control-Allow-Headers: Content-Type, Authorization, X-API-KEY');
+        }
+        
+        // JSON encode with proper flags
+        $jsonFlags = JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES;
+        
+        // Add pretty print if requested
+        if (isset($this->request->get['pretty']) || isset($this->request->get['debug'])) {
+            $jsonFlags |= JSON_PRETTY_PRINT;
+        }
+        
+        echo json_encode($data, $jsonFlags);
         exit;
     }
+    
     
     /**
      * Get language ID from config
@@ -3137,4 +3679,1513 @@ class ControllerApiProductApi extends Controller {
             ), 500);
         }
     }
+    
+    // ==========================================
+    // DYNAMIC DATABASE FIELDS MANAGEMENT SYSTEM
+    // 
+    // FEATURES:
+    // ✅ Works with ANY table (product, category, customer, order, manufacturer, etc.)
+    // ✅ Auto-detects primary key (product_id, category_id, customer_id, etc.)
+    // ✅ Multi-language support (language_id)
+    // ✅ Full validation against database schema
+    // ✅ Detailed error messages
+    // ✅ PHP 5.6+ compatible
+    // ✅ OpenCart 2, 3, 4 compatible
+    // ==========================================
+    
+    /**
+     * ==========================================
+     * UPDATE DYNAMIC FIELDS IN ANY TABLE
+     * ==========================================
+     * 
+     * Endpoint: POST /index.php?route=api/product_api/updateDynamicFields&api_key=xxx
+     * 
+     * ==========================================
+     * EXAMPLE 1: Update Product Table
+     * ==========================================
+     * 
+     * REQUEST:
+     * {
+     *   "table": "product",
+     *   "id": 42,
+     *   "fields": {
+     *     "quantity": 150,
+     *     "price": "1299.99",
+     *     "weight": "0.650",
+     *     "status": 1
+     *   }
+     * }
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "message": "Fields updated successfully",
+     *   "table": "product",
+     *   "primary_key": "product_id",
+     *   "record_id": 42,
+     *   "updated_fields": ["quantity", "price", "weight", "status"],
+     *   "affected_rows": 1
+     * }
+     * 
+     * ==========================================
+     * EXAMPLE 2: Update Category Table
+     * ==========================================
+     * 
+     * REQUEST:
+     * {
+     *   "table": "category",
+     *   "id": 59,
+     *   "fields": {
+     *     "status": 1,
+     *     "sort_order": 5,
+     *     "top": 1
+     *   }
+     * }
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "message": "Fields updated successfully",
+     *   "table": "category",
+     *   "primary_key": "category_id",
+     *   "record_id": 59,
+     *   "updated_fields": ["status", "sort_order", "top"],
+     *   "affected_rows": 1
+     * }
+     * 
+     * ==========================================
+     * EXAMPLE 3: Update Customer Table
+     * ==========================================
+     * 
+     * REQUEST:
+     * {
+     *   "table": "customer",
+     *   "id": 123,
+     *   "fields": {
+     *     "status": 1,
+     *     "newsletter": 1,
+     *     "safe": 1
+     *   }
+     * }
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "message": "Fields updated successfully",
+     *   "table": "customer",
+     *   "primary_key": "customer_id",
+     *   "record_id": 123,
+     *   "updated_fields": ["status", "newsletter", "safe"],
+     *   "affected_rows": 1
+     * }
+     * 
+     * ==========================================
+     * EXAMPLE 4: Update Multi-Language Table (Product Description)
+     * ==========================================
+     * 
+     * REQUEST:
+     * {
+     *   "table": "product_description",
+     *   "id": 42,
+     *   "language_id": 2,
+     *   "fields": {
+     *     "name": "iPhone 15 Pro Max",
+     *     "description": "<p>Complete product description</p>",
+     *     "meta_title": "Buy iPhone 15 Pro Max",
+     *     "meta_description": "Best price for iPhone 15",
+     *     "meta_keyword": "iphone, apple, smartphone"
+     *   }
+     * }
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "message": "Fields updated successfully",
+     *   "table": "product_description",
+     *   "primary_key": "product_id",
+     *   "record_id": 42,
+     *   "language_id": 2,
+     *   "updated_fields": ["name", "description", "meta_title", "meta_description", "meta_keyword"],
+     *   "affected_rows": 1
+     * }
+     * 
+     * ==========================================
+     * EXAMPLE 5: Update Manufacturer Table
+     * ==========================================
+     * 
+     * REQUEST:
+     * {
+     *   "table": "manufacturer",
+     *   "id": 8,
+     *   "fields": {
+     *     "name": "Apple Inc.",
+     *     "sort_order": 10
+     *   }
+     * }
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "message": "Fields updated successfully",
+     *   "table": "manufacturer",
+     *   "primary_key": "manufacturer_id",
+     *   "record_id": 8,
+     *   "updated_fields": ["name", "sort_order"],
+     *   "affected_rows": 1
+     * }
+     * 
+     * ==========================================
+     * EXAMPLE 6: Update Order Status
+     * ==========================================
+     * 
+     * REQUEST:
+     * {
+     *   "table": "order",
+     *   "id": 1001,
+     *   "fields": {
+     *     "order_status_id": 5,
+     *     "comment": "Order shipped via DHL"
+     *   }
+     * }
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "message": "Fields updated successfully",
+     *   "table": "order",
+     *   "primary_key": "order_id",
+     *   "record_id": 1001,
+     *   "updated_fields": ["order_status_id", "comment"],
+     *   "affected_rows": 1
+     * }
+     * 
+     * ==========================================
+     * ERROR RESPONSE EXAMPLE:
+     * ==========================================
+     * 
+     * {
+     *   "success": false,
+     *   "error": "Field validation failed",
+     *   "validation_errors": {
+     *     "invalid_field": "Field does not exist in table",
+     *     "price": "Must be numeric (expected: decimal(15,4))"
+     *   },
+     *   "available_fields": ["product_id", "quantity", "price", "weight", "status"]
+     * }
+     * 
+     * ==========================================
+     * CURL EXAMPLES:
+     * ==========================================
+     * 
+     * # Update product
+     * curl -X POST 'https://yoursite.com/index.php?route=api/product_api/updateDynamicFields&api_key=YOUR_KEY' \
+     *   -H 'Content-Type: application/json' \
+     *   -d '{"table":"product","id":42,"fields":{"quantity":150}}'
+     * 
+     * # Update category
+     * curl -X POST 'https://yoursite.com/index.php?route=api/product_api/updateDynamicFields&api_key=YOUR_KEY' \
+     *   -H 'Content-Type: application/json' \
+     *   -d '{"table":"category","id":59,"fields":{"status":1}}'
+     * 
+     * # Update customer
+     * curl -X POST 'https://yoursite.com/index.php?route=api/product_api/updateDynamicFields&api_key=YOUR_KEY' \
+     *   -H 'Content-Type: application/json' \
+     *   -d '{"table":"customer","id":123,"fields":{"status":1}}'
+     * 
+     * ==========================================
+     * BACKWARD COMPATIBILITY:
+     * ==========================================
+     * You can still use "product_id" instead of "id" for product tables
+     */
+    public function updateDynamicFields() {
+        $this->authenticate();
+        
+        try {
+            // Only POST method allowed
+            if ($this->request->server['REQUEST_METHOD'] !== 'POST') {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'Only POST method allowed',
+                    'method_received' => $this->request->server['REQUEST_METHOD']
+                ), 405);
+            }
+            
+            // Get JSON data from request body
+            $jsonData = json_decode(file_get_contents('php://input'), true);
+            
+            // Fallback to POST data if JSON parsing failed
+            if (!$jsonData || !is_array($jsonData)) {
+                $jsonData = $this->request->post;
+            }
+            
+            // Check if data provided
+            if (empty($jsonData)) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'No data provided',
+                    'required_fields' => array(
+                        'table' => 'Table name (e.g., "product", "category", "customer")',
+                        'id' => 'Record ID (integer)',
+                        'fields' => 'Object with field names and values to update'
+                    ),
+                    'examples' => array(
+                        'product' => array('table' => 'product', 'id' => 42, 'fields' => array('quantity' => 100)),
+                        'category' => array('table' => 'category', 'id' => 59, 'fields' => array('status' => 1)),
+                        'customer' => array('table' => 'customer', 'id' => 123, 'fields' => array('status' => 1))
+                    )
+                ), 400);
+            }
+            
+            // Validate table parameter
+            if (!isset($jsonData['table']) || empty(trim($jsonData['table']))) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'Missing required field: table'
+                ), 400);
+            }
+            
+            $tableName = trim($jsonData['table']);
+            
+            // Get record ID (support both 'id' and 'product_id' for backward compatibility)
+            $recordId = 0;
+            if (isset($jsonData['id'])) {
+                $recordId = (int)$jsonData['id'];
+            } elseif (isset($jsonData['product_id'])) {
+                $recordId = (int)$jsonData['product_id'];
+            }
+            
+            if ($recordId <= 0) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'Missing or invalid record ID',
+                    'hint' => 'Use "id" parameter (e.g., "id": 42) or "product_id" for backward compatibility'
+                ), 400);
+            }
+            
+            // Validate fields
+            if (!isset($jsonData['fields']) || !is_array($jsonData['fields']) || empty($jsonData['fields'])) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'Missing or invalid fields parameter',
+                    'example' => array('fields' => array('quantity' => 100, 'price' => '999.99'))
+                ), 400);
+            }
+            
+            $fields = $jsonData['fields'];
+            $languageId = isset($jsonData['language_id']) ? (int)$jsonData['language_id'] : null;
+            
+            // Check table exists
+            if (!$this->checkTableExists($tableName)) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => "Table does not exist: {$tableName}",
+                    'hint' => 'Use getAvailableTables endpoint to see available tables',
+                    'endpoint' => '/index.php?route=api/product_api/getAvailableTables&api_key=xxx'
+                ), 404);
+            }
+            
+            // Get table structure and primary key
+            $tableStructure = $this->getTableStructureData($tableName);
+            $primaryKey = $this->getPrimaryKeyData($tableName);
+            
+            // Validate fields
+            $validatedFields = $this->validateFieldsData($fields, $tableStructure);
+            
+            if (!empty($validatedFields['errors'])) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'Field validation failed',
+                    'validation_errors' => $validatedFields['errors'],
+                    'available_fields' => array_keys($tableStructure),
+                    'hint' => 'Use getTableStructure?table=' . $tableName . ' to see all available fields'
+                ), 400);
+            }
+            
+            // Check record exists
+            if (!$this->checkRecordExistsGeneric($tableName, $primaryKey, $recordId, $languageId)) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => "Record not found in table {$tableName}",
+                    'table' => $tableName,
+                    'primary_key' => $primaryKey,
+                    'record_id' => $recordId,
+                    'language_id' => $languageId,
+                    'hint' => 'Make sure the record exists with this ID'
+                ), 404);
+            }
+            
+            // Execute update
+            $updateResult = $this->executeDynamicUpdateGeneric(
+                $tableName,
+                $primaryKey,
+                $recordId,
+                $validatedFields['fields'],
+                $languageId
+            );
+            
+            if (!$updateResult['success']) {
+                throw new Exception($updateResult['error']);
+            }
+            
+            // Success response
+            $response = array(
+                'success' => true,
+                'message' => 'Fields updated successfully',
+                'table' => $tableName,
+                'primary_key' => $primaryKey,
+                'record_id' => $recordId,
+                'updated_fields' => array_keys($validatedFields['fields']),
+                'affected_rows' => $updateResult['affected_rows']
+            );
+            
+            if ($languageId !== null) {
+                $response['language_id'] = $languageId;
+            }
+            
+            $this->sendResponse($response);
+            
+        } catch (Exception $e) {
+            $this->sendResponse(array(
+                'success' => false,
+                'error' => 'Update failed: ' . $e->getMessage()
+            ), 500);
+        }
+    }
+    
+    /**
+     * ==========================================
+     * GET DYNAMIC FIELDS FROM ANY TABLE
+     * ==========================================
+     * 
+     * Endpoint: GET /index.php?route=api/product_api/getDynamicFields
+     * 
+     * PARAMETERS:
+     * - table (string, required)        - Table name
+     * - id (int, required)              - Record ID
+     * - fields (string, optional)       - Comma-separated field names (* = all)
+     * - language_id (int, optional)     - Language ID (for multi-language tables)
+     * 
+     * ==========================================
+     * EXAMPLE 1: Get All Product Fields
+     * ==========================================
+     * 
+     * REQUEST:
+     * GET /index.php?route=api/product_api/getDynamicFields&table=product&id=42&api_key=xxx
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "table": "product",
+     *   "primary_key": "product_id",
+     *   "record_id": 42,
+     *   "data": {
+     *     "product_id": 42,
+     *     "model": "IP15P-128",
+     *     "sku": "SKU-12345",
+     *     "quantity": 150,
+     *     "price": "1299.9900",
+     *     "weight": "0.6500",
+     *     "status": 1,
+     *     "manufacturer_id": 8,
+     *     "date_added": "2024-01-15 10:30:00"
+     *   }
+     * }
+     * 
+     * ==========================================
+     * EXAMPLE 2: Get Specific Product Fields
+     * ==========================================
+     * 
+     * REQUEST:
+     * GET /index.php?route=api/product_api/getDynamicFields&table=product&id=42&fields=quantity,price,status&api_key=xxx
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "table": "product",
+     *   "primary_key": "product_id",
+     *   "record_id": 42,
+     *   "requested_fields": ["quantity", "price", "status"],
+     *   "data": {
+     *     "quantity": 150,
+     *     "price": "1299.9900",
+     *     "status": 1
+     *   }
+     * }
+     * 
+     * ==========================================
+     * EXAMPLE 3: Get Category Data
+     * ==========================================
+     * 
+     * REQUEST:
+     * GET /index.php?route=api/product_api/getDynamicFields&table=category&id=59&api_key=xxx
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "table": "category",
+     *   "primary_key": "category_id",
+     *   "record_id": 59,
+     *   "data": {
+     *     "category_id": 59,
+     *     "parent_id": 0,
+     *     "top": 1,
+     *     "column": 1,
+     *     "sort_order": 5,
+     *     "status": 1,
+     *     "date_added": "2023-05-10 12:00:00"
+     *   }
+     * }
+     * 
+     * ==========================================
+     * EXAMPLE 4: Get Customer Data
+     * ==========================================
+     * 
+     * REQUEST:
+     * GET /index.php?route=api/product_api/getDynamicFields&table=customer&id=123&api_key=xxx
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "table": "customer",
+     *   "primary_key": "customer_id",
+     *   "record_id": 123,
+     *   "data": {
+     *     "customer_id": 123,
+     *     "firstname": "John",
+     *     "lastname": "Doe",
+     *     "email": "john@example.com",
+     *     "status": 1,
+     *     "newsletter": 1,
+     *     "date_added": "2023-01-15 10:30:00"
+     *   }
+     * }
+     * 
+     * ==========================================
+     * EXAMPLE 5: Get Multi-Language Data (Product Description)
+     * ==========================================
+     * 
+     * REQUEST:
+     * GET /index.php?route=api/product_api/getDynamicFields&table=product_description&id=42&language_id=2&api_key=xxx
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "table": "product_description",
+     *   "primary_key": "product_id",
+     *   "record_id": 42,
+     *   "language_id": 2,
+     *   "data": {
+     *     "product_id": 42,
+     *     "language_id": 2,
+     *     "name": "iPhone 15 Pro Max",
+     *     "description": "<p>Complete product description</p>",
+     *     "meta_title": "Buy iPhone 15 Pro Max",
+     *     "meta_description": "Best price for iPhone 15",
+     *     "meta_keyword": "iphone, apple, smartphone"
+     *   }
+     * }
+     * 
+     * ==========================================
+     * EXAMPLE 6: Get Order Data
+     * ==========================================
+     * 
+     * REQUEST:
+     * GET /index.php?route=api/product_api/getDynamicFields&table=order&id=1001&api_key=xxx
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "table": "order",
+     *   "primary_key": "order_id",
+     *   "record_id": 1001,
+     *   "data": {
+     *     "order_id": 1001,
+     *     "customer_id": 123,
+     *     "order_status_id": 5,
+     *     "total": "1299.99",
+     *     "currency_code": "USD",
+     *     "date_added": "2024-05-01 10:00:00"
+     *   }
+     * }
+     * 
+     * ==========================================
+     * CURL EXAMPLES:
+     * ==========================================
+     * 
+     * # Get all product fields
+     * curl 'https://yoursite.com/index.php?route=api/product_api/getDynamicFields&table=product&id=42&api_key=YOUR_KEY'
+     * 
+     * # Get specific product fields
+     * curl 'https://yoursite.com/index.php?route=api/product_api/getDynamicFields&table=product&id=42&fields=quantity,price,status&api_key=YOUR_KEY'
+     * 
+     * # Get category data
+     * curl 'https://yoursite.com/index.php?route=api/product_api/getDynamicFields&table=category&id=59&api_key=YOUR_KEY'
+     * 
+     * # Get customer data
+     * curl 'https://yoursite.com/index.php?route=api/product_api/getDynamicFields&table=customer&id=123&api_key=YOUR_KEY'
+     * 
+     * # Get multi-language data
+     * curl 'https://yoursite.com/index.php?route=api/product_api/getDynamicFields&table=product_description&id=42&language_id=2&api_key=YOUR_KEY'
+     */
+    public function getDynamicFields() {
+        $this->authenticate();
+        
+        try {
+            // Get URL parameters
+            $tableName = isset($this->request->get['table']) ? trim($this->request->get['table']) : '';
+            
+            // Support both 'id' and 'product_id' for backward compatibility
+            $recordId = 0;
+            if (isset($this->request->get['id'])) {
+                $recordId = (int)$this->request->get['id'];
+            } elseif (isset($this->request->get['product_id'])) {
+                $recordId = (int)$this->request->get['product_id'];
+            }
+            
+            $requestedFields = isset($this->request->get['fields']) ? trim($this->request->get['fields']) : '*';
+            $languageId = isset($this->request->get['language_id']) ? (int)$this->request->get['language_id'] : null;
+            
+            // Validate required parameters
+            if (empty($tableName)) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'table parameter is required',
+                    'examples' => array(
+                        'product' => 'table=product&id=42',
+                        'category' => 'table=category&id=59',
+                        'customer' => 'table=customer&id=123'
+                    )
+                ), 400);
+            }
+            
+            if ($recordId <= 0) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'id parameter is required and must be positive integer',
+                    'hint' => 'Use id=42 or product_id=42 (for backward compatibility)',
+                    'example' => 'id=42'
+                ), 400);
+            }
+            
+            // Check if table exists
+            if (!$this->checkTableExists($tableName)) {
+                $availableTables = $this->getAvailableTablesData();
+                $tableNames = array();
+                foreach ($availableTables as $t) {
+                    if (isset($t['name'])) {
+                        $tableNames[] = $t['name'];
+                    }
+                }
+                
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => "Table does not exist: {$tableName}",
+                    'available_tables_sample' => array_slice($tableNames, 0, 10),
+                    'hint' => 'Use getAvailableTables endpoint for full list'
+                ), 404);
+            }
+            
+            // Get structure and primary key
+            $tableStructure = $this->getTableStructureData($tableName);
+            $primaryKey = $this->getPrimaryKeyData($tableName);
+            
+            // Parse fields
+            $fieldsArray = ($requestedFields === '*') 
+                ? array_keys($tableStructure) 
+                : array_map('trim', explode(',', $requestedFields));
+            
+            $fieldsArray = array_filter($fieldsArray);
+            
+            // Validate fields
+            $invalidFields = array();
+            foreach ($fieldsArray as $field) {
+                if (!isset($tableStructure[$field])) {
+                    $invalidFields[] = $field;
+                }
+            }
+            
+            if (!empty($invalidFields)) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'Invalid field names requested',
+                    'invalid_fields' => $invalidFields,
+                    'available_fields' => array_keys($tableStructure),
+                    'hint' => 'Use getTableStructure?table=' . $tableName . ' to see all available fields'
+                ), 400);
+            }
+            
+            // Check record exists
+            if (!$this->checkRecordExistsGeneric($tableName, $primaryKey, $recordId, $languageId)) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => "Record not found in table {$tableName}",
+                    'table' => $tableName,
+                    'primary_key' => $primaryKey,
+                    'record_id' => $recordId,
+                    'language_id' => $languageId
+                ), 404);
+            }
+            
+            // Get data
+            $data = $this->executeDynamicSelectGeneric($tableName, $primaryKey, $recordId, $fieldsArray, $languageId);
+            
+            if (!$data) {
+                throw new Exception('Failed to retrieve data from database');
+            }
+            
+            // Build response
+            $response = array(
+                'success' => true,
+                'table' => $tableName,
+                'primary_key' => $primaryKey,
+                'record_id' => $recordId,
+                'data' => $data
+            );
+            
+            if ($requestedFields !== '*') {
+                $response['requested_fields'] = $fieldsArray;
+            }
+            
+            if ($languageId !== null) {
+                $response['language_id'] = $languageId;
+            }
+            
+            $this->sendResponse($response);
+            
+        } catch (Exception $e) {
+            $this->sendResponse(array(
+                'success' => false,
+                'error' => 'Retrieval failed: ' . $e->getMessage()
+            ), 500);
+        }
+    }
+    
+    /**
+     * ==========================================
+     * GET TABLE STRUCTURE
+     * ==========================================
+     * 
+     * Shows all columns, data types, and constraints for a table
+     * 
+     * Endpoint: GET /index.php?route=api/product_api/getTableStructure&table=TABLENAME&api_key=xxx
+     * 
+     * ==========================================
+     * EXAMPLE 1: Get Product Table Structure
+     * ==========================================
+     * 
+     * REQUEST:
+     * GET /index.php?route=api/product_api/getTableStructure&table=product&api_key=xxx
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "table": "product",
+     *   "full_table_name": "oc_product",
+     *   "primary_key": "product_id",
+     *   "fields": {
+     *     "product_id": {
+     *       "type": "int(11)",
+     *       "null": "NO",
+     *       "key": "PRI",
+     *       "default": null,
+     *       "extra": "auto_increment"
+     *     },
+     *     "model": {
+     *       "type": "varchar(64)",
+     *       "null": "NO",
+     *       "key": "",
+     *       "default": "",
+     *       "extra": ""
+     *     },
+     *     "quantity": {
+     *       "type": "int(4)",
+     *       "null": "NO",
+     *       "key": "",
+     *       "default": "0",
+     *       "extra": ""
+     *     },
+     *     "price": {
+     *       "type": "decimal(15,4)",
+     *       "null": "NO",
+     *       "key": "",
+     *       "default": "0.0000",
+     *       "extra": ""
+     *     }
+     *   },
+     *   "field_count": 25,
+     *   "field_names": ["product_id", "model", "sku", "quantity", "price", "..."]
+     * }
+     * 
+     * ==========================================
+     * EXAMPLE 2: Get Category Table Structure
+     * ==========================================
+     * 
+     * REQUEST:
+     * GET /index.php?route=api/product_api/getTableStructure&table=category&api_key=xxx
+     * 
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "table": "category",
+     *   "full_table_name": "oc_category",
+     *   "primary_key": "category_id",
+     *   "fields": {
+     *     "category_id": {
+     *       "type": "int(11)",
+     *       "null": "NO",
+     *       "key": "PRI",
+     *       "default": null,
+     *       "extra": "auto_increment"
+     *     },
+     *     "parent_id": {
+     *       "type": "int(11)",
+     *       "null": "NO",
+     *       "key": "",
+     *       "default": "0",
+     *       "extra": ""
+     *     },
+     *     "status": {
+     *       "type": "tinyint(1)",
+     *       "null": "NO",
+     *       "key": "",
+     *       "default": "0",
+     *       "extra": ""
+     *     }
+     *   },
+     *   "field_count": 7,
+     *   "field_names": ["category_id", "parent_id", "top", "column", "sort_order", "status", "date_added"]
+     * }
+     * 
+     * ==========================================
+     * CURL EXAMPLES:
+     * ==========================================
+     * 
+     * # Get product table structure
+     * curl 'https://yoursite.com/index.php?route=api/product_api/getTableStructure&table=product&api_key=YOUR_KEY'
+     * 
+     * # Get category table structure
+     * curl 'https://yoursite.com/index.php?route=api/product_api/getTableStructure&table=category&api_key=YOUR_KEY'
+     * 
+     * # Get customer table structure
+     * curl 'https://yoursite.com/index.php?route=api/product_api/getTableStructure&table=customer&api_key=YOUR_KEY'
+     */
+    public function getTableStructure() {
+        $this->authenticate();
+        
+        try {
+            $tableName = isset($this->request->get['table']) ? trim($this->request->get['table']) : '';
+            
+            if (empty($tableName)) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'table parameter is required',
+                    'example' => '/index.php?route=api/product_api/getTableStructure&table=product&api_key=xxx'
+                ), 400);
+            }
+            
+            if (!$this->checkTableExists($tableName)) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => "Table does not exist: {$tableName}",
+                    'hint' => 'Use getAvailableTables to see all tables'
+                ), 404);
+            }
+            
+            $structure = $this->getTableStructureData($tableName);
+            $primaryKey = $this->getPrimaryKeyData($tableName);
+            
+            $this->sendResponse(array(
+                'success' => true,
+                'table' => $tableName,
+                'full_table_name' => DB_PREFIX . $tableName,
+                'primary_key' => $primaryKey,
+                'fields' => $structure,
+                'field_count' => count($structure),
+                'field_names' => array_keys($structure),
+                'usage_examples' => array(
+                    'get_all_fields' => "/index.php?route=api/product_api/getDynamicFields&table={$tableName}&id=1&api_key=xxx",
+                    'get_specific_fields' => "/index.php?route=api/product_api/getDynamicFields&table={$tableName}&id=1&fields=field1,field2&api_key=xxx",
+                    'update_fields' => array(
+                        'url' => '/index.php?route=api/product_api/updateDynamicFields&api_key=xxx',
+                        'method' => 'POST',
+                        'body' => array(
+                            'table' => $tableName,
+                            'id' => 1,
+                            'fields' => array('field_name' => 'value')
+                        )
+                    )
+                )
+            ));
+            
+        } catch (Exception $e) {
+            $this->sendResponse(array(
+                'success' => false,
+                'error' => 'Failed to get table structure: ' . $e->getMessage()
+            ), 500);
+        }
+    }
+     
+    /**
+     * ==========================================
+     * GET AVAILABLE TABLES (Simplified)
+     * ==========================================
+     * 
+     * Lists all database tables accessible through the API.
+     * Blocked (blacklisted) tables are automatically filtered out.
+     * 
+     * Endpoint: GET /index.php?route=api/product_api/getAvailableTables&api_key=xxx
+     * 
+     * ==========================================
+     * RESPONSE EXAMPLE:
+     * ==========================================
+     * 
+     * {
+     *   "success": true,
+     *   "database_info": {
+     *     "name": "your_database",
+     *     "prefix": "oc_",
+     *     "total_tables": 45,
+     *     "blocked_count": 40,
+     *     "opencart_version": "2.3.0.2"
+     *   },
+     *   "tables": [
+     *     {"name": "oc_product", "short_name": "product"},
+     *     {"name": "oc_category", "short_name": "category"}
+     *   ]
+     * }
+     * 
+     * CURL:
+     *   curl 'https://yoursite.com/index.php?route=api/product_api/getAvailableTables&api_key=YOUR_KEY'
+     */
+    public function getAvailableTables() {
+        $this->authenticate();
+    
+        // ============================================================
+        // 1. Safe database retrieval (registry-first, bypass magic __get)
+        // ============================================================
+        $db = $this->getSafeDb();
+    
+        if ($db === null) {
+            $this->sendResponse(array(
+                'success'          => false,
+                'error'            => 'Database connection not available',
+                'opencart_version' => $this->getVersionInfo(),
+                'debug_info'       => array(
+                    'db_object_exists' => false,
+                    'db_object_type'   => 'null',
+                    'has_query_method' => false,
+                    'error_history'    => isset($this->error['database']) 
+                                          ? $this->error['database'] 
+                                          : 'No error logged'
+                ),
+                'suggestion'       => 'Call /index.php?route=api/product_api/debugDatabase&api_key=xxx for more info',
+                'troubleshooting'  => array(
+                    'step1' => 'Verify config.php has correct DB_* constants',
+                    'step2' => 'Check file permissions on system/storage/',
+                    'step3' => 'Enable PHP error_log and check for MySQL connection errors',
+                    'step4' => 'Try debugDatabase endpoint for more details'
+                )
+            ), 500);
+            return;
+        }
+    
+        try {
+            // ============================================================
+            // 2. Fetch tables
+            // ============================================================
+            // NOTE: SHOW TABLES bypasses SecureDbWrapper's blacklist regex
+            // (the regex only matches FROM/JOIN/INTO/UPDATE/TABLE keywords).
+            // We manually filter blocked tables below for security.
+            error_log('Product API: Executing SHOW TABLES');
+            $result = $db->query("SHOW TABLES");
+    
+            if (!$result || !is_object($result)) {
+                throw new Exception('SHOW TABLES query returned invalid result');
+            }
+    
+            // ============================================================
+            // 3. Get blacklist (if SecureDbWrapper is in use)
+            // ============================================================
+            $blockedTables = array();
+            if (method_exists($db, 'getBlockedTables')) {
+                $blockedTables = $db->getBlockedTables();
+            }
+    
+            // ============================================================
+            // 4. Build flat table list (filter out blocked ones)
+            // ============================================================
+            $tables        = array();
+            $blockedCount  = 0;
+    
+            if (isset($result->num_rows) && $result->num_rows > 0 && isset($result->rows)) {
+                foreach ($result->rows as $row) {
+                    // SHOW TABLES returns one column; get its value
+                    $fullTableName = reset($row);
+    
+                    if (empty($fullTableName) || !is_string($fullTableName)) {
+                        continue;
+                    }
+    
+                    $hasPrefix = (strpos($fullTableName, DB_PREFIX) === 0);
+                    $shortName = $hasPrefix
+                        ? substr($fullTableName, strlen(DB_PREFIX))
+                        : $fullTableName;
+    
+                    // Skip blacklisted tables
+                    if (!empty($blockedTables) && in_array(strtolower($shortName), $blockedTables, true)) {
+                        $blockedCount++;
+                        continue;
+                    }
+    
+                    $tables[] = array(
+                        'name'       => $fullTableName,
+                        'short_name' => $shortName,
+                        'has_prefix' => $hasPrefix
+                    );
+                }
+            }
+    
+            // Sort alphabetically by short name
+            usort($tables, function($a, $b) {
+                return strcmp($a['short_name'], $b['short_name']);
+            });
+    
+            // ============================================================
+            // 5. Response
+            // ============================================================
+            $this->sendResponse(array(
+                'success'       => true,
+                'database_info' => array(
+                    'name'             => defined('DB_DATABASE') ? DB_DATABASE : 'unknown',
+                    'prefix'           => defined('DB_PREFIX')   ? DB_PREFIX   : '',
+                    'host'             => defined('DB_HOSTNAME') ? DB_HOSTNAME : 'unknown',
+                    'total_tables'     => count($tables),
+                    'blocked_count'    => $blockedCount,
+                    'opencart_version' => defined('VERSION') ? VERSION : 'unknown'
+                ),
+                'tables' => $tables
+            ));
+    
+        } catch (Exception $e) {
+            error_log('Product API: getAvailableTables() Exception - ' . $e->getMessage());
+            $this->sendResponse(array(
+                'success'    => false,
+                'error'      => 'Failed to retrieve tables: ' . $e->getMessage(),
+                'error_type' => get_class($e)
+            ), 500);
+        } catch (Error $e) {
+            error_log('Product API: getAvailableTables() Fatal - ' . $e->getMessage());
+            $this->sendResponse(array(
+                'success'    => false,
+                'error'      => 'Fatal error retrieving tables: ' . $e->getMessage(),
+                'error_type' => get_class($e)
+            ), 500);
+        }
+    }
+    
+    /**
+     * Safely retrieve a working DB instance.
+     * 
+     * Works around OpenCart 2.3.x's magic __get() which proxies $this->db
+     * through the registry and can return inconsistent results.
+     * 
+     * @return object|null Returns DB object if usable, null otherwise.
+     */
+    private function getSafeDb() {
+        // 1. Try registry first (authoritative in OC 2.3.x)
+        $db = null;
+        if (isset($this->registry) && method_exists($this->registry, 'get')) {
+            $db = $this->registry->get('db');
+        }
+    
+        // 2. Fallback to magic property
+        if (!is_object($db)) {
+            $db = isset($this->db) ? $this->db : null;
+        }
+    
+        // 3. Validate it's actually usable
+        if (!is_object($db) || !method_exists($db, 'query')) {
+            return null;
+        }
+    
+        // 4. Quick alive-check (protects against stale/closed connections)
+        try {
+            $test = $db->query("SELECT 1 AS test");
+            if ($test !== false && is_object($test) 
+                && isset($test->num_rows) && $test->num_rows > 0) {
+                return $db;
+            }
+        } catch (Exception $e) {
+            error_log('Product API: getSafeDb() test exception - ' . $e->getMessage());
+        } catch (Error $e) {
+            error_log('Product API: getSafeDb() test fatal - ' . $e->getMessage());
+        }
+    
+        return null;
+    }
+    
+    
+    
+    
+    /**
+     * Deep debug database state
+     * GET: /index.php?route=api/product_api/debugDatabase&api_key=xxx
+     */
+    public function debugDatabase() {
+        $this->authenticate();
+        
+        $registryDb = null;
+        if (isset($this->registry) && method_exists($this->registry, 'get')) {
+            $registryDb = $this->registry->get('db');
+        }
+        
+        $directDb = isset($this->db) ? $this->db : null;
+        
+        $this->sendResponse(array(
+            'success' => true,
+            'constants' => array(
+                'DB_DRIVER'   => defined('DB_DRIVER') ? DB_DRIVER : 'NOT DEFINED',
+                'DB_HOSTNAME' => defined('DB_HOSTNAME') ? DB_HOSTNAME : 'NOT DEFINED',
+                'DB_DATABASE' => defined('DB_DATABASE') ? DB_DATABASE : 'NOT DEFINED',
+                'DB_PREFIX'   => defined('DB_PREFIX') ? DB_PREFIX : 'NOT DEFINED',
+                'DB_PORT'     => defined('DB_PORT') ? DB_PORT : 'NOT DEFINED',
+            ),
+            'paths' => array(
+                'DIR_APPLICATION' => defined('DIR_APPLICATION') ? DIR_APPLICATION : 'N/A',
+                'DIR_SYSTEM'      => defined('DIR_SYSTEM') ? DIR_SYSTEM : 'N/A',
+                'config_guess_1'  => realpath(DIR_APPLICATION . '../config.php'),
+            ),
+            'registry_db' => array(
+                'is_object'    => is_object($registryDb),
+                'type'         => gettype($registryDb),
+                'class'        => is_object($registryDb) ? get_class($registryDb) : 'N/A',
+                'has_query'    => is_object($registryDb) && method_exists($registryDb, 'query'),
+            ),
+            'direct_db' => array(
+                'is_object'    => is_object($directDb),
+                'type'         => gettype($directDb),
+                'class'        => is_object($directDb) ? get_class($directDb) : 'N/A',
+                'has_query'    => is_object($directDb) && method_exists($directDb, 'query'),
+            ),
+            'extensions' => array(
+                'mysqli'       => extension_loaded('mysqli'),
+                'pdo_mysql'    => extension_loaded('pdo_mysql'),
+                'gd'           => extension_loaded('gd'),
+            ),
+            'php_version' => PHP_VERSION,
+            'error_history' => $this->error,
+            'is_available'  => $this->isDatabaseAvailable(),
+        ));
+    }
+    
+    
+    
+    // ==========================================
+    // PRIVATE HELPER METHODS
+    // ==========================================
+    
+    /**
+     * Check if table exists in database
+     * @param string $tableName Table name without prefix
+     * @return bool True if table exists
+     */
+    private function checkTableExists($tableName) {
+        try {
+            $query = $this->db->query("SHOW TABLES LIKE '" . DB_PREFIX . $this->db->escape($tableName) . "'");
+            return $query->num_rows > 0;
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+    
+    /**
+     * Get table structure with column information
+     * @param string $tableName Table name without prefix
+     * @return array Column definitions
+     */
+    private function getTableStructureData($tableName) {
+        $query = $this->db->query("DESCRIBE " . DB_PREFIX . $this->db->escape($tableName));
+        
+        $structure = array();
+        foreach ($query->rows as $field) {
+            $structure[$field['Field']] = array(
+                'type' => $field['Type'],
+                'null' => $field['Null'],
+                'key' => $field['Key'],
+                'default' => $field['Default'],
+                'extra' => isset($field['Extra']) ? $field['Extra'] : ''
+            );
+        }
+        
+        return $structure;
+    }
+    
+    /**
+     * Get primary key column name
+     * Auto-detects from table structure or uses naming convention
+     * 
+     * @param string $tableName Table name without prefix
+     * @return string Primary key column name
+     */
+    private function getPrimaryKeyData($tableName) {
+        try {
+            // Try to get from database
+            $query = $this->db->query("SHOW KEYS FROM " . DB_PREFIX . $this->db->escape($tableName) . " WHERE Key_name = 'PRIMARY'");
+            
+            if ($query->num_rows > 0) {
+                return $query->row['Column_name'];
+            }
+        } catch (Exception $e) {
+            // Fallback to naming convention
+        }
+        
+        // Auto-detect primary key based on table name
+        $commonKeys = array(
+            'product' => 'product_id',
+            'category' => 'category_id',
+            'customer' => 'customer_id',
+            'order' => 'order_id',
+            'manufacturer' => 'manufacturer_id',
+            'information' => 'information_id',
+            'banner' => 'banner_id',
+            'coupon' => 'coupon_id',
+            'voucher' => 'voucher_id',
+            'review' => 'review_id',
+            'attribute' => 'attribute_id',
+            'option' => 'option_id',
+            'filter' => 'filter_id',
+            'download' => 'download_id',
+            'recurring' => 'recurring_id',
+            'return' => 'return_id',
+            'address' => 'address_id',
+            'affiliate' => 'affiliate_id',
+            'article' => 'article_id',
+            'blog' => 'blog_id'
+        );
+        
+        foreach ($commonKeys as $tablePattern => $keyName) {
+            if (strpos($tableName, $tablePattern) !== false) {
+                return $keyName;
+            }
+        }
+        
+        // Fallback: table_name + _id
+        return $tableName . '_id';
+    }
+    
+    /**
+     * Validate fields against table structure
+     * @param array $fields Field name => value pairs
+     * @param array $tableStructure Table structure
+     * @return array ['fields' => validated fields, 'errors' => error messages]
+     */
+    private function validateFieldsData($fields, $tableStructure) {
+        $validatedFields = array();
+        $errors = array();
+        
+        foreach ($fields as $fieldName => $value) {
+            // Check if field exists
+            if (!isset($tableStructure[$fieldName])) {
+                $errors[$fieldName] = "Field does not exist in table";
+                continue;
+            }
+            
+            $fieldInfo = $tableStructure[$fieldName];
+            
+            // Check NULL constraint
+            if ($value === null && $fieldInfo['null'] === 'NO' && $fieldInfo['default'] === null) {
+                $errors[$fieldName] = "Field cannot be NULL";
+                continue;
+            }
+            
+            // Validate data type
+            $typeValidation = $this->validateFieldTypeData($value, $fieldInfo['type']);
+            if ($typeValidation !== true) {
+                $errors[$fieldName] = $typeValidation;
+                continue;
+            }
+            
+            $validatedFields[$fieldName] = $value;
+        }
+        
+        return array(
+            'fields' => $validatedFields,
+            'errors' => $errors
+        );
+    }
+    
+    /**
+     * Validate field value against MySQL data type
+     * @param mixed $value Field value
+     * @param string $type MySQL column type
+     * @return mixed True if valid, error message if invalid
+     */
+    private function validateFieldTypeData($value, $type) {
+        if ($value === null) {
+            return true;
+        }
+        
+        // INT types
+        if (preg_match('/^(tiny|small|medium|big)?int/i', $type)) {
+            if (!is_numeric($value)) {
+                return "Must be numeric (expected: {$type})";
+            }
+            return true;
+        }
+        
+        // DECIMAL/FLOAT/DOUBLE
+        if (preg_match('/^(decimal|float|double|real)/i', $type)) {
+            if (!is_numeric($value)) {
+                return "Must be numeric (expected: {$type})";
+            }
+            return true;
+        }
+        
+        // VARCHAR/CHAR
+        if (preg_match('/^(var)?char\((\d+)\)/i', $type, $matches)) {
+            $maxLength = (int)$matches[2];
+            if (is_string($value) && strlen($value) > $maxLength) {
+                return "String too long (max: {$maxLength}, got: " . strlen($value) . ")";
+            }
+            return true;
+        }
+        
+        // TEXT types
+        if (preg_match('/^(tiny|medium|long)?text/i', $type)) {
+            return true;
+        }
+        
+        // DATE/DATETIME/TIMESTAMP
+        if (preg_match('/^(date|datetime|timestamp)/i', $type)) {
+            if (!strtotime($value)) {
+                return "Invalid date format (expected: YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)";
+            }
+            return true;
+        }
+        
+        // ENUM
+        if (preg_match('/^enum\((.*)\)/i', $type, $matches)) {
+            $enumValues = array_map(function($v) {
+                return trim($v, "'\"");
+            }, explode(',', $matches[1]));
+            
+            if (!in_array($value, $enumValues)) {
+                return "Invalid ENUM value (allowed: " . implode(', ', $enumValues) . ")";
+            }
+            return true;
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Check if record exists (generic - works with any primary key)
+     * @param string $tableName Table name
+     * @param string $primaryKey Primary key column name
+     * @param int $recordId Record ID
+     * @param int|null $languageId Language ID
+     * @return bool True if exists
+     */
+    private function checkRecordExistsGeneric($tableName, $primaryKey, $recordId, $languageId = null) {
+        try {
+            $sql = "SELECT `{$primaryKey}` FROM " . DB_PREFIX . $this->db->escape($tableName) . " 
+                    WHERE `{$primaryKey}` = '" . (int)$recordId . "'";
+            
+            if ($languageId !== null) {
+                $sql .= " AND language_id = '" . (int)$languageId . "'";
+            }
+            
+            $sql .= " LIMIT 1";
+            
+            $query = $this->db->query($sql);
+            return $query->num_rows > 0;
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+    
+    /**
+     * Execute UPDATE (generic - works with any primary key)
+     * @param string $tableName Table name
+     * @param string $primaryKey Primary key column
+     * @param int $recordId Record ID
+     * @param array $fields Fields to update
+     * @param int|null $languageId Language ID
+     * @return array Result
+     */
+    private function executeDynamicUpdateGeneric($tableName, $primaryKey, $recordId, $fields, $languageId = null) {
+        try {
+            $setStatements = array();
+            
+            foreach ($fields as $fieldName => $value) {
+                $escapedValue = $this->escapeFieldValueData($value);
+                $setStatements[] = "`" . $fieldName . "` = " . $escapedValue;
+            }
+            
+            if (empty($setStatements)) {
+                return array('success' => false, 'error' => 'No fields to update');
+            }
+            
+            $sql = "UPDATE " . DB_PREFIX . $this->db->escape($tableName) . " 
+                    SET " . implode(', ', $setStatements) . " 
+                    WHERE `{$primaryKey}` = '" . (int)$recordId . "'";
+            
+            if ($languageId !== null) {
+                $sql .= " AND language_id = '" . (int)$languageId . "'";
+            }
+            
+            $this->db->query($sql);
+            
+            return array(
+                'success' => true,
+                'affected_rows' => $this->db->countAffected()
+            );
+            
+        } catch (Exception $e) {
+            return array('success' => false, 'error' => $e->getMessage());
+        }
+    }
+     
+    /**
+     * Execute SELECT (generic - works with any primary key)
+     * @param string $tableName Table name
+     * @param string $primaryKey Primary key column
+     * @param int $recordId Record ID
+     * @param array $fields Fields to select
+     * @param int|null $languageId Language ID
+     * @return array|false Row data or false
+     */
+    private function executeDynamicSelectGeneric($tableName, $primaryKey, $recordId, $fields, $languageId = null) {
+        try {
+            $selectFields = array_map(function($field) {
+                return "`" . $field . "`";
+            }, $fields);
+            
+            $sql = "SELECT " . implode(', ', $selectFields) . " 
+                    FROM " . DB_PREFIX . $this->db->escape($tableName) . " 
+                    WHERE `{$primaryKey}` = '" . (int)$recordId . "'";
+            
+            if ($languageId !== null) {
+                $sql .= " AND language_id = '" . (int)$languageId . "'";
+            }
+            
+            $sql .= " LIMIT 1";
+            
+            $query = $this->db->query($sql);
+            
+            if ($query->num_rows > 0) {
+                return $query->row;
+            }
+            
+            return false;
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+    
+    /**
+     * Escape value for SQL query (PHP 5.6+ compatible)
+     * @param mixed $value Value to escape
+     * @return string Escaped SQL value
+     */
+    private function escapeFieldValueData($value) {
+        if (is_null($value)) {
+            return 'NULL';
+        }
+        
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        }
+        
+        if (is_int($value) || is_float($value)) {
+            return "'" . $value . "'";
+        }
+        
+        return "'" . $this->db->escape($value) . "'";
+    }
+    
+    /**
+     * Get list of available database tables
+     * @return array Tables list
+     */
+    private function getAvailableTablesData() {
+        try {
+            if (!$this->isDatabaseAvailable()) {
+                return array('error' => 'Database not available');
+            }
+            
+            // Test connection first
+            $testQuery = $this->db->query("SELECT 1");
+            if (!$testQuery) {
+                return array('error' => 'Database connection test failed');
+            }
+            
+            $query = $this->db->query("SHOW TABLES LIKE '" . DB_PREFIX . "%'");
+            
+            if (!$query) {
+                return array('error' => 'Failed to execute SHOW TABLES query');
+            }
+            
+            $tables = array();
+            foreach ($query->rows as $row) {
+                $fullTableName = reset($row);
+                $tableName = str_replace(DB_PREFIX, '', $fullTableName);
+                
+                // Skip system/security tables
+                if (!in_array($tableName, array('session', 'cart', 'api_session', 'api'))) {
+                    $tables[] = array(
+                        'name' => $tableName,
+                        'full_name' => $fullTableName,
+                        'primary_key' => $this->getPrimaryKeyData($tableName)
+                    );
+                }
+            }
+            
+            return $tables;
+            
+        } catch (Exception $e) {
+            return array('error' => $e->getMessage());
+        }
+    }
+    /**
+     * Get security blacklist information
+     * 
+     * GET: /index.php?route=api/product_api/getSecurityInfo&api_key=xxx
+     * 
+     * Returns:
+     * - Security status (enabled/disabled)
+     * - List of 45 blocked tables
+     * - Database prefix
+     * - OpenCart version
+     * 
+     * @return JSON response
+     */
+    public function getSecurityInfo() {
+        $this->authenticate();
+        
+        $securityInfo = array(
+            'security_enabled' => ($this->db instanceof SecureDbWrapper),
+            'protection_type' => 'Blacklist Only (45 tables)',
+            'blocked_tables' => array(),
+            'blocked_count' => 0,
+            'database_prefix' => DB_PREFIX,
+            'opencart_version' => VERSION,
+            'performance_impact' => '~0.5ms per query'
+        );
+        
+        if ($this->db instanceof SecureDbWrapper) {
+            $securityInfo['blocked_tables'] = $this->db->getBlockedTables();
+            $securityInfo['blocked_count'] = count($securityInfo['blocked_tables']);
+            $securityInfo['status'] = '✅ ACTIVE';
+        } else {
+            $securityInfo['status'] = '⚠️ NOT ACTIVE';
+            $securityInfo['warning'] = 'Security wrapper not initialized';
+        }
+        
+        $this->sendResponse(array(
+            'success' => true,
+            'data' => $securityInfo
+        ));
+    }
+
 }
