@@ -4231,132 +4231,300 @@ class ControllerApiProductApi extends Controller {
         $this->authenticate();
         
         try {
-            // Get URL parameters
-            $tableName = isset($this->request->get['table']) ? trim($this->request->get['table']) : '';
+            // Get table name
+            $table = isset($this->request->get['table']) ? $this->request->get['table'] : '';
             
-            // Support both 'id' and 'product_id' for backward compatibility
-            $recordId = 0;
-            if (isset($this->request->get['id'])) {
-                $recordId = (int)$this->request->get['id'];
-            } elseif (isset($this->request->get['product_id'])) {
-                $recordId = (int)$this->request->get['product_id'];
-            }
-            
-            $requestedFields = isset($this->request->get['fields']) ? trim($this->request->get['fields']) : '*';
-            $languageId = isset($this->request->get['language_id']) ? (int)$this->request->get['language_id'] : null;
-            
-            // Validate required parameters
-            if (empty($tableName)) {
+            if (empty($table)) {
                 $this->sendResponse(array(
                     'success' => false,
                     'error' => 'table parameter is required',
-                    'examples' => array(
-                        'product' => 'table=product&id=42',
-                        'category' => 'table=category&id=59',
-                        'customer' => 'table=customer&id=123'
-                    )
+                    'required_fields' => array('table', 'id'),
+                    'example' => 'table=product_image&id=123'
                 ), 400);
+            }
+            
+            // Remove prefix if user included it (e.g., oc_url_alias → url_alias)
+            $table = str_replace(DB_PREFIX, '', $table);
+            
+            // ========================================
+            // STEP 0: Auto-detect table structure
+            // ========================================
+            $tableInfo = $this->getTableInfo($table);
+            
+            if (!$tableInfo['exists']) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error' => 'Table does not exist: ' . DB_PREFIX . $table,
+                    'hint' => 'Check table name spelling',
+                    'example' => 'table=product_image or table=url_alias'
+                ), 404);
+            }
+            
+            $primaryKey = $tableInfo['primary_key'];
+            $supportsLanguage = $tableInfo['supports_language'];
+            $allColumns = $tableInfo['columns'];
+            $secondaryKeys = $tableInfo['secondary_keys'];
+            
+            // ========================================
+            // STEP 1: Smart parameter detection
+            // ========================================
+            $recordId = 0;
+            $usedParameter = '';
+            $searchColumn = $primaryKey; // Default
+            
+            // Priority 1: Direct primary key column (e.g., product_image_id=4037411)
+            if (isset($this->request->get[$primaryKey])) {
+                $recordId = (int)$this->request->get[$primaryKey];
+                $usedParameter = $primaryKey;
+                $searchColumn = $primaryKey;
+            }
+            // Priority 2: Check all GET parameters for column matches
+            else {
+                $allParams = $this->request->get;
+                
+                foreach ($allParams as $paramName => $paramValue) {
+                    // Skip non-ID parameters
+                    if (in_array($paramName, array('route', 'api_key', 'table', 'language_id'))) {
+                        continue;
+                    }
+                    
+                    // Check if this parameter matches a known column
+                    // 1. Is it a secondary key?
+                    if (in_array($paramName, $secondaryKeys)) {
+                        $recordId = (int)$paramValue;
+                        $usedParameter = $paramName;
+                        $searchColumn = $paramName;
+                        break;
+                    }
+                    
+                    // 2. Is it the generic 'id' parameter?
+                    if ($paramName === 'id') {
+                        $recordId = (int)$paramValue;
+                        $usedParameter = 'id';
+                        $searchColumn = $primaryKey;
+                        break;
+                    }
+                    
+                    // 3. Does this parameter match any column name in the table?
+                    if (in_array($paramName, $allColumns)) {
+                        $recordId = (int)$paramValue;
+                        $usedParameter = $paramName;
+                        $searchColumn = $paramName;
+                        break;
+                    }
+                }
             }
             
             if ($recordId <= 0) {
                 $this->sendResponse(array(
                     'success' => false,
                     'error' => 'id parameter is required and must be positive integer',
-                    'hint' => 'Use id=42 or product_id=42 (for backward compatibility)',
-                    'example' => 'id=42'
+                    'hint' => 'Use one of: id=42, ' . $primaryKey . '=42, or any column name from the table',
+                    'table' => DB_PREFIX . $table,
+                    'primary_key' => $primaryKey,
+                    'available_columns' => $allColumns,
+                    'examples' => array(
+                        'generic' => 'id=42',
+                        'primary' => $primaryKey . '=42',
+                        'any_column' => 'product_id=42'
+                    )
                 ), 400);
             }
             
-            // Check if table exists
-            if (!$this->checkTableExists($tableName)) {
-                $availableTables = $this->getAvailableTablesData();
-                $tableNames = array();
-                foreach ($availableTables as $t) {
-                    if (isset($t['name'])) {
-                        $tableNames[] = $t['name'];
+            // Get language ID if supported
+            $languageId = null;
+            if ($supportsLanguage) {
+                $languageId = isset($this->request->get['language_id']) 
+                    ? (int)$this->request->get['language_id'] 
+                    : $this->getLanguageId();
+            }
+            
+            // ========================================
+            // STEP 2: Build and execute query
+            // ========================================
+            $sql = "SELECT * FROM " . DB_PREFIX . $table . " WHERE " . $searchColumn . " = '" . (int)$recordId . "'";
+            
+            if ($supportsLanguage && $languageId) {
+                $sql .= " AND language_id = '" . (int)$languageId . "'";
+            }
+            
+            error_log("getDynamicFields SQL: " . $sql);
+            
+            $result = $this->db->query($sql);
+            
+            // ========================================
+            // STEP 3: FALLBACK - Try first column if not found
+            // ========================================
+            if ($result->num_rows == 0 && $searchColumn !== $primaryKey) {
+                error_log("getDynamicFields: No results with " . $searchColumn . "=" . $recordId . ", trying primary key...");
+                
+                $sql = "SELECT * FROM " . DB_PREFIX . $table . " WHERE " . $primaryKey . " = '" . (int)$recordId . "'";
+                
+                if ($supportsLanguage && $languageId) {
+                    $sql .= " AND language_id = '" . (int)$languageId . "'";
+                }
+                
+                $result = $this->db->query($sql);
+                
+                if ($result->num_rows > 0) {
+                    $searchColumn = $primaryKey;
+                    error_log("getDynamicFields: ✓ SUCCESS with primary key!");
+                }
+            }
+            
+            // ========================================
+            // STEP 4: Return result or error
+            // ========================================
+            if ($result->num_rows == 0) {
+                // Provide helpful debug info
+                $debugQuery = $this->db->query("SELECT COUNT(*) as total FROM " . DB_PREFIX . $table);
+                $totalRecords = $debugQuery->row['total'];
+                
+                // Sample query to show available IDs
+                $sampleQuery = $this->db->query(
+                    "SELECT " . $searchColumn . " FROM " . DB_PREFIX . $table . 
+                    " ORDER BY " . $searchColumn . " DESC LIMIT 5"
+                );
+                $sampleIds = array();
+                if ($sampleQuery->num_rows > 0) {
+                    foreach ($sampleQuery->rows as $row) {
+                        $sampleIds[] = $row[$searchColumn];
                     }
                 }
                 
                 $this->sendResponse(array(
                     'success' => false,
-                    'error' => "Table does not exist: {$tableName}",
-                    'available_tables_sample' => array_slice($tableNames, 0, 10),
-                    'hint' => 'Use getAvailableTables endpoint for full list'
-                ), 404);
-            }
-            
-            // Get structure and primary key
-            $tableStructure = $this->getTableStructureData($tableName);
-            $primaryKey = $this->getPrimaryKeyData($tableName);
-            
-            // Parse fields
-            $fieldsArray = ($requestedFields === '*') 
-                ? array_keys($tableStructure) 
-                : array_map('trim', explode(',', $requestedFields));
-            
-            $fieldsArray = array_filter($fieldsArray);
-            
-            // Validate fields
-            $invalidFields = array();
-            foreach ($fieldsArray as $field) {
-                if (!isset($tableStructure[$field])) {
-                    $invalidFields[] = $field;
-                }
-            }
-            
-            if (!empty($invalidFields)) {
-                $this->sendResponse(array(
-                    'success' => false,
-                    'error' => 'Invalid field names requested',
-                    'invalid_fields' => $invalidFields,
-                    'available_fields' => array_keys($tableStructure),
-                    'hint' => 'Use getTableStructure?table=' . $tableName . ' to see all available fields'
-                ), 400);
-            }
-            
-            // Check record exists
-            if (!$this->checkRecordExistsGeneric($tableName, $primaryKey, $recordId, $languageId)) {
-                $this->sendResponse(array(
-                    'success' => false,
-                    'error' => "Record not found in table {$tableName}",
-                    'table' => $tableName,
+                    'error' => 'Record not found in table ' . DB_PREFIX . $table,
+                    'table' => DB_PREFIX . $table,
                     'primary_key' => $primaryKey,
+                    'search_column_used' => $searchColumn,
                     'record_id' => $recordId,
-                    'language_id' => $languageId
+                    'language_id' => $languageId,
+                    'parameter_used' => $usedParameter,
+                    'debug' => array(
+                        'total_records_in_table' => $totalRecords,
+                        'sql_attempted' => $sql,
+                        'sample_ids' => $sampleIds,
+                        'hint' => 'ID ' . $recordId . ' does not exist in column ' . $searchColumn
+                    )
                 ), 404);
             }
             
-            // Get data
-            $data = $this->executeDynamicSelectGeneric($tableName, $primaryKey, $recordId, $fieldsArray, $languageId);
-            
-            if (!$data) {
-                throw new Exception('Failed to retrieve data from database');
-            }
-            
-            // Build response
-            $response = array(
+            // SUCCESS
+            $this->sendResponse(array(
                 'success' => true,
-                'table' => $tableName,
+                'table' => DB_PREFIX . $table,
                 'primary_key' => $primaryKey,
+                'search_column_used' => $searchColumn,
                 'record_id' => $recordId,
-                'data' => $data
-            );
-            
-            if ($requestedFields !== '*') {
-                $response['requested_fields'] = $fieldsArray;
-            }
-            
-            if ($languageId !== null) {
-                $response['language_id'] = $languageId;
-            }
-            
-            $this->sendResponse($response);
+                'language_id' => $languageId,
+                'parameter_used' => $usedParameter,
+                'supports_language' => $supportsLanguage,
+                'table_columns' => $allColumns,
+                'data' => $result->num_rows > 1 ? $result->rows : $result->row,
+                'row_count' => $result->num_rows
+            ));
             
         } catch (Exception $e) {
             $this->sendResponse(array(
                 'success' => false,
-                'error' => 'Retrieval failed: ' . $e->getMessage()
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
             ), 500);
+        }
+    }
+    
+    /**
+     * Get comprehensive table information - AUTO-DETECTION
+     * 
+     * @param string $table     Table name (without prefix)
+     * @return array            Table info including primary key, columns, language support
+     */
+    private function getTableInfo($table) {
+        $info = array(
+            'exists' => false,
+            'primary_key' => null,
+            'supports_language' => false,
+            'columns' => array(),
+            'secondary_keys' => array()
+        );
+        
+        try {
+            // Check if table exists
+            $checkTable = $this->db->query(
+                "SHOW TABLES LIKE '" . DB_PREFIX . $this->db->escape($table) . "'"
+            );
+            
+            if ($checkTable->num_rows == 0) {
+                return $info;
+            }
+            
+            $info['exists'] = true;
+            
+            // Get all columns
+            $columnsQuery = $this->db->query("SHOW COLUMNS FROM " . DB_PREFIX . $table);
+            
+            if ($columnsQuery->num_rows > 0) {
+                foreach ($columnsQuery->rows as $column) {
+                    $columnName = $column['Field'];
+                    $info['columns'][] = $columnName;
+                    
+                    // Check for language_id column
+                    if ($columnName === 'language_id') {
+                        $info['supports_language'] = true;
+                    }
+                    
+                    // Check for common foreign keys
+                    if (preg_match('/_id$/', $columnName) && $columnName !== 'language_id') {
+                        $info['secondary_keys'][] = $columnName;
+                    }
+                }
+            }
+            
+            // Get primary key using SHOW KEYS
+            $keysQuery = $this->db->query(
+                "SHOW KEYS FROM " . DB_PREFIX . $table . " WHERE Key_name = 'PRIMARY'"
+            );
+            
+            if ($keysQuery->num_rows > 0) {
+                $info['primary_key'] = $keysQuery->row['Column_name'];
+            } else {
+                // Fallback: Use first column as primary key
+                if (!empty($info['columns'])) {
+                    $info['primary_key'] = $info['columns'][0];
+                    error_log("getTableInfo: No PRIMARY KEY found for " . $table . ", using first column: " . $info['primary_key']);
+                }
+            }
+            
+            // Remove primary key from secondary keys if present
+            if ($info['primary_key']) {
+                $info['secondary_keys'] = array_diff($info['secondary_keys'], array($info['primary_key']));
+                $info['secondary_keys'] = array_values($info['secondary_keys']); // Re-index
+            }
+            
+        } catch (Exception $e) {
+            error_log("getTableInfo error: " . $e->getMessage());
+        }
+        
+        return $info;
+    }
+    
+    /**
+     * Check if a column exists in a table
+     * 
+     * @param string $table     Table name (without prefix)
+     * @param string $column    Column name to check
+     * @return bool             True if column exists
+     */
+    private function doesColumnExist($table, $column) {
+        try {
+            $query = $this->db->query(
+                "SHOW COLUMNS FROM " . DB_PREFIX . $table . " LIKE '" . $this->db->escape($column) . "'"
+            );
+            return $query->num_rows > 0;
+        } catch (Exception $e) {
+            error_log("doesColumnExist error: " . $e->getMessage());
+            return false;
         }
     }
     
