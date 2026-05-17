@@ -1254,6 +1254,92 @@ class ControllerApiProductApi extends Controller {
             ), 500);
         }
     }
+
+    /**
+     * Check product images (main + gallery) for file existence
+     *
+     * @param int $product_id OpenCart product ID
+     * GET: /index.php?route=api/product_api/checkImages&product_id=123&api_key=xxx
+     * @return array Status report with main_image and gallery_images
+     */
+    public function checkImages() {
+        $this->authenticate();
+        
+        $product_id = isset($this->request->get['product_id']) ? (int)$this->request->get['product_id'] : 0;
+        if (!$product_id) {
+            $this->sendResponse(['success' => false, 'error' => 'product_id required'], 400);
+        }
+        
+        // Prepare result array
+        $result = [
+            'product_id' => $product_id,
+            'main_image' => null,
+            'gallery_images' => [],
+            'missing_count' => 0,
+            'total_count' => 0
+        ];
+        
+        // Check database availability
+        if (!$this->isDatabaseAvailable()) {
+            $this->sendResponse(['success' => false, 'error' => 'Database connection unavailable'], 500);
+        }
+        
+        // 1. Get main product image
+        $mainQuery = $this->db->query(
+            "SELECT image FROM " . DB_PREFIX . "product 
+             WHERE product_id = '" . (int)$product_id . "'"
+        );
+        
+        if ($mainQuery->num_rows == 0) {
+            $this->sendResponse(['success' => false, 'error' => 'Product not found'], 404);
+        }
+        
+        $mainImageDb = $mainQuery->row['image'];
+        $mainImagePath = DIR_IMAGE . $mainImageDb;
+        $mainExists = !empty($mainImageDb) && file_exists($mainImagePath);
+        
+        $result['main_image'] = [
+            'db_path' => $mainImageDb,
+            'full_path' => $mainImagePath,
+            'exists' => $mainExists,
+            'size_bytes' => $mainExists ? filesize($mainImagePath) : 0
+        ];
+        
+        if (!$mainExists && !empty($mainImageDb)) {
+            $result['missing_count']++;
+        }
+        
+        // 2. Get gallery images
+        $galleryQuery = $this->db->query(
+            "SELECT product_image_id, image 
+             FROM " . DB_PREFIX . "product_image 
+             WHERE product_id = '" . (int)$product_id . "' 
+             ORDER BY sort_order ASC"
+        );
+        
+        foreach ($galleryQuery->rows as $galleryRow) {
+            $galleryDbPath = $galleryRow['image'];
+            $galleryFullPath = DIR_IMAGE . $galleryDbPath;
+            $galleryExists = !empty($galleryDbPath) && file_exists($galleryFullPath);
+            
+            $result['gallery_images'][] = [
+                'product_image_id' => $galleryRow['product_image_id'],
+                'db_path' => $galleryDbPath,
+                'full_path' => $galleryFullPath,
+                'exists' => $galleryExists,
+                'size_bytes' => $galleryExists ? filesize($galleryFullPath) : 0
+            ];
+            
+            if (!$galleryExists && !empty($galleryDbPath)) {
+                $result['missing_count']++;
+            }
+        }
+        
+        $result['total_count'] = 1 + count($galleryQuery->rows);
+        $result['available_count'] = $result['total_count'] - $result['missing_count'];
+        
+        $this->sendResponse(['success' => true, 'data' => $result]);
+    }
     
     // ==================== IMAGE UPLOAD OPERATIONS ====================
     
