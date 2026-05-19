@@ -4806,6 +4806,366 @@ class ControllerApiProductApi extends Controller {
     }
     
     /**
+     * ==========================================
+     * DELETE (REMOVE) ROW(S) FROM ANY TABLE
+     * ==========================================
+     *
+     * Endpoint: DELETE/POST /index.php?route=api/product_api/deleteDynamicFields&api_key=xxx
+     *
+     * ==========================================
+     * EXAMPLE 1: Delete a Product Row by ID
+     * ==========================================
+     *
+     * REQUEST:
+     * {
+     *   "table": "product",
+     *   "id": 101
+     * }
+     *
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "message": "Record deleted successfully",
+     *   "table": "product",
+     *   "primary_key": "product_id",
+     *   "record_id": 101,
+     *   "affected_rows": 1
+     * }
+     *
+     * ==========================================
+     * EXAMPLE 2: Delete a Product Description (multi-language)
+     * ==========================================
+     *
+     * REQUEST:
+     * {
+     *   "table": "product_description",
+     *   "id": 101,
+     *   "language_id": 2
+     * }
+     *
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "message": "Record deleted successfully",
+     *   "table": "product_description",
+     *   "primary_key": "product_id",
+     *   "record_id": 101,
+     *   "language_id": 2,
+     *   "affected_rows": 1
+     * }
+     *
+     * ==========================================
+     * EXAMPLE 3: Delete a Category
+     * ==========================================
+     *
+     * REQUEST:
+     * {
+     *   "table": "category",
+     *   "id": 62
+     * }
+     *
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "message": "Record deleted successfully",
+     *   "table": "category",
+     *   "primary_key": "category_id",
+     *   "record_id": 62,
+     *   "affected_rows": 1
+     * }
+     *
+     * ==========================================
+     * EXAMPLE 4: Delete by WHERE conditions (multi-column match)
+     * ==========================================
+     *
+     * REQUEST:
+     * {
+     *   "table": "product_to_category",
+     *   "where": {
+     *     "product_id": 101,
+     *     "category_id": 25
+     *   }
+     * }
+     *
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "message": "Record deleted successfully",
+     *   "table": "product_to_category",
+     *   "where_conditions": {"product_id": 101, "category_id": 25},
+     *   "affected_rows": 1
+     * }
+     *
+     * ==========================================
+     * ERROR RESPONSE EXAMPLE:
+     * ==========================================
+     *
+     * {
+     *   "success": false,
+     *   "error": "Record not found in table product",
+     *   "table": "product",
+     *   "primary_key": "product_id",
+     *   "record_id": 999
+     * }
+     *
+     * ==========================================
+     * CURL EXAMPLES:
+     * ==========================================
+     *
+     * # Delete product by ID
+     * curl -X POST 'https://yoursite.com/index.php?route=api/product_api/deleteDynamicFields&api_key=YOUR_KEY' \
+     *   -H 'Content-Type: application/json' \
+     *   -d '{"table":"product","id":101}'
+     *
+     * # Delete product description for a specific language
+     * curl -X POST 'https://yoursite.com/index.php?route=api/product_api/deleteDynamicFields&api_key=YOUR_KEY' \
+     *   -H 'Content-Type: application/json' \
+     *   -d '{"table":"product_description","id":101,"language_id":2}'
+     *
+     * # Delete by multiple WHERE conditions (junction/pivot tables)
+     * curl -X POST 'https://yoursite.com/index.php?route=api/product_api/deleteDynamicFields&api_key=YOUR_KEY' \
+     *   -H 'Content-Type: application/json' \
+     *   -d '{"table":"product_to_category","where":{"product_id":101,"category_id":25}}'
+     *
+     * ==========================================
+     * NOTES:
+     * ==========================================
+     * - Blocked/blacklisted tables (orders, customers, users, etc.) are protected
+     * - Use "id" OR "where" — not both. "where" takes priority if both are sent
+     * - For multi-language tables, combine "id" + "language_id" to target one language row
+     * - "where" mode supports any valid column(s) from the table (validated against schema)
+     * - Backward compatibility: "product_id" accepted as alias for "id"
+     */
+    public function deleteDynamicFields() {
+        $this->authenticate();
+    
+        try {
+            // ─── 1. Accept DELETE or POST ─────────────────────────────────────
+            $method = isset($this->request->server['REQUEST_METHOD'])
+                ? strtoupper($this->request->server['REQUEST_METHOD'])
+                : 'POST';
+    
+            if (!in_array($method, array('POST', 'DELETE'))) {
+                $this->sendResponse(array(
+                    'success'         => false,
+                    'error'           => 'Only POST or DELETE method allowed',
+                    'method_received' => $method
+                ), 405);
+                return;
+            }
+    
+            // ─── 2. Parse request body ────────────────────────────────────────
+            $jsonData = json_decode(file_get_contents('php://input'), true);
+    
+            if (!$jsonData || !is_array($jsonData)) {
+                $jsonData = $this->request->post;
+            }
+    
+            if (empty($jsonData)) {
+                $this->sendResponse(array(
+                    'success'         => false,
+                    'error'           => 'No data provided',
+                    'required_fields' => array(
+                        'table' => 'Table name (e.g., "product", "category")',
+                        'id'    => 'Record ID  — OR —',
+                        'where' => 'Object with column => value conditions'
+                    ),
+                    'examples' => array(
+                        'by_id'    => array('table' => 'product',           'id'    => 101),
+                        'by_where' => array('table' => 'product_to_category', 'where' => array('product_id' => 101, 'category_id' => 25))
+                    )
+                ), 400);
+                return;
+            }
+    
+            // ─── 3. Validate table ────────────────────────────────────────────
+            if (!isset($jsonData['table']) || empty(trim($jsonData['table']))) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error'   => 'Missing required field: table'
+                ), 400);
+                return;
+            }
+    
+            $tableName = trim($jsonData['table']);
+            // Strip prefix if caller included it (e.g. oc_product → product)
+            $tableName = str_replace(DB_PREFIX, '', $tableName);
+    
+            // ─── 4. Check table exists (also enforces blacklist via SecureDbWrapper) ──
+            if (!$this->checkTableExists($tableName)) {
+                $this->sendResponse(array(
+                    'success'  => false,
+                    'error'    => "Table does not exist or is not accessible: {$tableName}",
+                    'hint'     => 'Use getAvailableTables endpoint to see accessible tables',
+                    'endpoint' => '/index.php?route=api/product_api/getAvailableTables&api_key=xxx'
+                ), 404);
+                return;
+            }
+    
+            // ─── 5. Resolve deletion mode: WHERE-object  vs  single ID ──────
+            $useWhereObject = isset($jsonData['where'])
+                && is_array($jsonData['where'])
+                && !empty($jsonData['where']);
+    
+            if ($useWhereObject) {
+                // ── MODE A: arbitrary WHERE conditions ───────────────────────
+                $whereFields = $jsonData['where'];
+    
+                // Validate every WHERE column against the real schema
+                $tableStructure = $this->getTableStructureData($tableName);
+                $validatedWhere = $this->validateFieldsData($whereFields, $tableStructure);
+    
+                if (!empty($validatedWhere['errors'])) {
+                    $this->sendResponse(array(
+                        'success'           => false,
+                        'error'             => 'WHERE field validation failed',
+                        'validation_errors' => $validatedWhere['errors'],
+                        'available_fields'  => array_keys($tableStructure)
+                    ), 400);
+                    return;
+                }
+    
+                if (empty($validatedWhere['fields'])) {
+                    $this->sendResponse(array(
+                        'success' => false,
+                        'error'   => 'No valid WHERE conditions after validation'
+                    ), 400);
+                    return;
+                }
+    
+                // Check at least one matching row exists
+                $existsSql = "SELECT 1 FROM " . DB_PREFIX . $this->db->escape($tableName)
+                           . " WHERE " . $this->buildWhereClause($validatedWhere['fields'])
+                           . " LIMIT 1";
+    
+                $existsResult = $this->db->query($existsSql);
+    
+                if (!$existsResult || $existsResult->num_rows === 0) {
+                    $this->sendResponse(array(
+                        'success'          => false,
+                        'error'            => "No matching record found in table {$tableName}",
+                        'table'            => $tableName,
+                        'where_conditions' => $whereFields
+                    ), 404);
+                    return;
+                }
+    
+                // Execute DELETE
+                $deleteSql = "DELETE FROM " . DB_PREFIX . $this->db->escape($tableName)
+                           . " WHERE " . $this->buildWhereClause($validatedWhere['fields']);
+    
+                $this->db->query($deleteSql);
+                $affectedRows = $this->db->countAffected();
+    
+                $this->sendResponse(array(
+                    'success'          => true,
+                    'message'          => 'Record deleted successfully',
+                    'table'            => $tableName,
+                    'where_conditions' => $whereFields,
+                    'affected_rows'    => $affectedRows
+                ));
+    
+            } else {
+                // ── MODE B: single primary-key ID (+ optional language_id) ───
+    
+                // Resolve record ID — support "id", "product_id" (legacy), or the
+                // actual primary-key column name supplied by the caller
+                $primaryKey = $this->getPrimaryKeyData($tableName);
+                $recordId   = 0;
+    
+                if (isset($jsonData['id'])) {
+                    $recordId = (int)$jsonData['id'];
+                } elseif (isset($jsonData[$primaryKey])) {
+                    $recordId = (int)$jsonData[$primaryKey];
+                } elseif (isset($jsonData['product_id'])) {
+                    // backward-compat alias
+                    $recordId = (int)$jsonData['product_id'];
+                }
+    
+                if ($recordId <= 0) {
+                    $this->sendResponse(array(
+                        'success' => false,
+                        'error'   => 'Missing or invalid record ID',
+                        'hint'    => 'Provide "id": <int>  or  "where": { col: val, ... }',
+                        'example' => array('table' => $tableName, 'id' => 42)
+                    ), 400);
+                    return;
+                }
+    
+                $languageId = isset($jsonData['language_id'])
+                    ? (int)$jsonData['language_id']
+                    : null;
+    
+                // Confirm record exists before deleting
+                if (!$this->checkRecordExistsGeneric($tableName, $primaryKey, $recordId, $languageId)) {
+                    $response = array(
+                        'success'     => false,
+                        'error'       => "Record not found in table {$tableName}",
+                        'table'       => $tableName,
+                        'primary_key' => $primaryKey,
+                        'record_id'   => $recordId
+                    );
+                    if ($languageId !== null) {
+                        $response['language_id'] = $languageId;
+                    }
+                    $this->sendResponse($response, 404);
+                    return;
+                }
+    
+                // Build and execute DELETE
+                $deleteSql = "DELETE FROM " . DB_PREFIX . $this->db->escape($tableName)
+                           . " WHERE `{$primaryKey}` = '" . (int)$recordId . "'";
+    
+                if ($languageId !== null) {
+                    $deleteSql .= " AND `language_id` = '" . (int)$languageId . "'";
+                }
+    
+                $this->db->query($deleteSql);
+                $affectedRows = $this->db->countAffected();
+    
+                $response = array(
+                    'success'      => true,
+                    'message'      => 'Record deleted successfully',
+                    'table'        => $tableName,
+                    'primary_key'  => $primaryKey,
+                    'record_id'    => $recordId,
+                    'affected_rows'=> $affectedRows
+                );
+    
+                if ($languageId !== null) {
+                    $response['language_id'] = $languageId;
+                }
+    
+                $this->sendResponse($response);
+            }
+    
+        } catch (Exception $e) {
+            $this->sendResponse(array(
+                'success' => false,
+                'error'   => 'Delete failed: ' . $e->getMessage()
+            ), 500);
+        }
+    }
+    
+    /**
+     * Build a SQL WHERE clause from a validated key=>value map.
+     * All values are escaped; NULL produces IS NULL.
+     *
+     * @param  array  $conditions  Column => value pairs (already validated)
+     * @return string              e.g. "`product_id` = '101' AND `category_id` = '25'"
+     */
+    private function buildWhereClause(array $conditions) {
+        $parts = array();
+        foreach ($conditions as $column => $value) {
+            if (is_null($value)) {
+                $parts[] = "`" . $column . "` IS NULL";
+            } else {
+                $parts[] = "`" . $column . "` = " . $this->escapeFieldValueData($value);
+            }
+        }
+        return implode(' AND ', $parts);
+    }
+    /**
      * Get comprehensive table information - AUTO-DETECTION
      * 
      * @param string $table     Table name (without prefix)
