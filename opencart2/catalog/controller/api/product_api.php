@@ -3768,17 +3768,302 @@ class ControllerApiProductApi extends Controller {
     
     // ==========================================
     // DYNAMIC DATABASE FIELDS MANAGEMENT SYSTEM
-    // 
-    // FEATURES:
-    // ✅ Works with ANY table (product, category, customer, order, manufacturer, etc.)
-    // ✅ Auto-detects primary key (product_id, category_id, customer_id, etc.)
-    // ✅ Multi-language support (language_id)
-    // ✅ Full validation against database schema
-    // ✅ Detailed error messages
-    // ✅ PHP 5.6+ compatible
-    // ✅ OpenCart 2, 3, 4 compatible
     // ==========================================
-    
+
+    /**
+     * ==========================================
+     * ADD (INSERT) DYNAMIC FIELDS INTO ANY TABLE
+     * ==========================================
+     *
+     * Endpoint: POST /index.php?route=api/product_api/addDynamicFields&api_key=xxx
+     *
+     * ==========================================
+     * EXAMPLE 1: Insert a New Product Row
+     * ==========================================
+     *
+     * REQUEST:
+     * {
+     *   "table": "product",
+     *   "fields": {
+     *     "model": "DEMO-001",
+     *     "sku": "SKU-DEMO",
+     *     "quantity": 50,
+     *     "price": "99.99",
+     *     "status": 1,
+     *     "date_added": "2024-01-01 00:00:00"
+     *   }
+     * }
+     *
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "message": "Record inserted successfully",
+     *   "table": "product",
+     *   "new_id": 101,
+     *   "inserted_fields": ["model", "sku", "quantity", "price", "status", "date_added"]
+     * }
+     *
+     * ==========================================
+     * EXAMPLE 2: Insert a Product Description (multi-language)
+     * ==========================================
+     *
+     * REQUEST:
+     * {
+     *   "table": "product_description",
+     *   "language_id": 2,
+     *   "fields": {
+     *     "product_id": 101,
+     *     "language_id": 2,
+     *     "name": "Demo Product",
+     *     "description": "<p>A demo product.</p>",
+     *     "meta_title": "Demo Product",
+     *     "meta_description": "Buy Demo Product",
+     *     "meta_keyword": "demo"
+     *   }
+     * }
+     *
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "message": "Record inserted successfully",
+     *   "table": "product_description",
+     *   "new_id": 0,
+     *   "inserted_fields": ["product_id", "language_id", "name", "description", "meta_title", "meta_description", "meta_keyword"]
+     * }
+     *
+     * ==========================================
+     * EXAMPLE 3: Insert a Category
+     * ==========================================
+     *
+     * REQUEST:
+     * {
+     *   "table": "category",
+     *   "fields": {
+     *     "parent_id": 0,
+     *     "top": 1,
+     *     "column": 1,
+     *     "sort_order": 10,
+     *     "status": 1,
+     *     "date_added": "2024-06-01 12:00:00"
+     *   }
+     * }
+     *
+     * RESPONSE:
+     * {
+     *   "success": true,
+     *   "message": "Record inserted successfully",
+     *   "table": "category",
+     *   "new_id": 62,
+     *   "inserted_fields": ["parent_id", "top", "column", "sort_order", "status", "date_added"]
+     * }
+     *
+     * ==========================================
+     * ERROR RESPONSE EXAMPLE:
+     * ==========================================
+     *
+     * {
+     *   "success": false,
+     *   "error": "Field validation failed",
+     *   "validation_errors": {
+     *     "bad_field": "Field does not exist in table",
+     *     "price": "Must be numeric (expected: decimal(15,4))"
+     *   },
+     *   "available_fields": ["model", "sku", "quantity", "price", "status"]
+     * }
+     *
+     * ==========================================
+     * CURL EXAMPLES:
+     * ==========================================
+     *
+     * # Insert product
+     * curl -X POST 'https://yoursite.com/index.php?route=api/product_api/addDynamicFields&api_key=YOUR_KEY' \
+     *   -H 'Content-Type: application/json' \
+     *   -d '{"table":"product","fields":{"model":"DEMO-001","price":"99.99","status":1}}'
+     *
+     * # Insert category
+     * curl -X POST 'https://yoursite.com/index.php?route=api/product_api/addDynamicFields&api_key=YOUR_KEY' \
+     *   -H 'Content-Type: application/json' \
+     *   -d '{"table":"category","fields":{"parent_id":0,"status":1}}'
+     */
+    public function addDynamicFields() {
+        $this->authenticate();
+
+        try {
+            // Only POST method allowed
+            if ($this->request->server['REQUEST_METHOD'] !== 'POST') {
+                $this->sendResponse(array(
+                    'success'         => false,
+                    'error'           => 'Only POST method allowed',
+                    'method_received' => $this->request->server['REQUEST_METHOD']
+                ), 405);
+                return;
+            }
+
+            // ─── 1. Parse request body ────────────────────────────────────────
+            $jsonData = json_decode(file_get_contents('php://input'), true);
+
+            if (!$jsonData || !is_array($jsonData)) {
+                $jsonData = $this->request->post;
+            }
+
+            if (empty($jsonData)) {
+                $this->sendResponse(array(
+                    'success'        => false,
+                    'error'          => 'No data provided',
+                    'required_fields' => array(
+                        'table'  => 'Table name (e.g., "product", "category")',
+                        'fields' => 'Object with column names and values to insert'
+                    ),
+                    'examples' => array(
+                        'product'  => array('table' => 'product',  'fields' => array('model' => 'SKU-001', 'price' => '9.99', 'status' => 1)),
+                        'category' => array('table' => 'category', 'fields' => array('parent_id' => 0, 'status' => 1))
+                    )
+                ), 400);
+                return;
+            }
+
+            // ─── 2. Validate table parameter ─────────────────────────────────
+            if (!isset($jsonData['table']) || empty(trim($jsonData['table']))) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error'   => 'Missing required field: table'
+                ), 400);
+                return;
+            }
+
+            $tableName = trim($jsonData['table']);
+
+            // Strip prefix if the caller included it (e.g. oc_product → product)
+            $tableName = str_replace(DB_PREFIX, '', $tableName);
+
+            // ─── 3. Validate fields parameter ────────────────────────────────
+            if (!isset($jsonData['fields']) || !is_array($jsonData['fields']) || empty($jsonData['fields'])) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error'   => 'Missing or invalid fields parameter',
+                    'example' => array('fields' => array('model' => 'DEMO', 'price' => '99.99', 'status' => 1))
+                ), 400);
+                return;
+            }
+
+            $fields     = $jsonData['fields'];
+            $languageId = isset($jsonData['language_id']) ? (int)$jsonData['language_id'] : null;
+
+            // ─── 4. Check table exists ────────────────────────────────────────
+            if (!$this->checkTableExists($tableName)) {
+                $this->sendResponse(array(
+                    'success'  => false,
+                    'error'    => "Table does not exist: {$tableName}",
+                    'hint'     => 'Use getAvailableTables endpoint to see available tables',
+                    'endpoint' => '/index.php?route=api/product_api/getAvailableTables&api_key=xxx'
+                ), 404);
+                return;
+            }
+
+            // ─── 5. Load schema and validate submitted fields ─────────────────
+            $tableStructure = $this->getTableStructureData($tableName);
+            $primaryKey     = $this->getPrimaryKeyData($tableName);
+
+            // Remove auto-increment primary key from the fields to insert
+            // (the DB generates it; passing it would cause duplicate-key errors)
+            if (isset($fields[$primaryKey])) {
+                $pkInfo = isset($tableStructure[$primaryKey]) ? $tableStructure[$primaryKey] : array();
+                $isAutoIncrement = isset($pkInfo['extra']) && stripos($pkInfo['extra'], 'auto_increment') !== false;
+                if ($isAutoIncrement) {
+                    unset($fields[$primaryKey]);
+                }
+            }
+
+            // Inject language_id from the top-level parameter if not already present
+            if ($languageId !== null && isset($tableStructure['language_id']) && !isset($fields['language_id'])) {
+                $fields['language_id'] = $languageId;
+            }
+
+            $validatedFields = $this->validateFieldsData($fields, $tableStructure);
+
+            if (!empty($validatedFields['errors'])) {
+                $this->sendResponse(array(
+                    'success'           => false,
+                    'error'             => 'Field validation failed',
+                    'validation_errors' => $validatedFields['errors'],
+                    'available_fields'  => array_keys($tableStructure),
+                    'hint'              => 'Use getTableStructure?table=' . $tableName . ' to see all available fields'
+                ), 400);
+                return;
+            }
+
+            if (empty($validatedFields['fields'])) {
+                $this->sendResponse(array(
+                    'success' => false,
+                    'error'   => 'No valid fields to insert after validation'
+                ), 400);
+                return;
+            }
+
+            // ─── 6. Build and execute INSERT ──────────────────────────────────
+            $insertResult = $this->executeDynamicInsert($tableName, $validatedFields['fields']);
+
+            if (!$insertResult['success']) {
+                throw new Exception($insertResult['error']);
+            }
+
+            // ─── 7. Success response ──────────────────────────────────────────
+            $response = array(
+                'success'         => true,
+                'message'         => 'Record inserted successfully',
+                'table'           => $tableName,
+                'primary_key'     => $primaryKey,
+                'new_id'          => $insertResult['insert_id'],
+                'inserted_fields' => array_keys($validatedFields['fields'])
+            );
+
+            if ($languageId !== null) {
+                $response['language_id'] = $languageId;
+            }
+
+            $this->sendResponse($response);
+
+        } catch (Exception $e) {
+            $this->sendResponse(array(
+                'success' => false,
+                'error'   => 'Insert failed: ' . $e->getMessage()
+            ), 500);
+        }
+    }
+
+    /**
+     * Execute INSERT (generic - works with any table)
+     *
+     * @param string $tableName  Table name without prefix
+     * @param array  $fields     Validated field name => value pairs
+     * @return array             ['success' => bool, 'insert_id' => int, 'error' => string]
+     */
+    private function executeDynamicInsert($tableName, $fields) {
+        try {
+            $columns = array();
+            $values  = array();
+
+            foreach ($fields as $fieldName => $value) {
+                $columns[] = '`' . $fieldName . '`';
+                $values[]  = $this->escapeFieldValueData($value);
+            }
+
+            $sql = "INSERT INTO " . DB_PREFIX . $this->db->escape($tableName)
+                 . " (" . implode(', ', $columns) . ")"
+                 . " VALUES (" . implode(', ', $values) . ")";
+
+            $this->db->query($sql);
+
+            return array(
+                'success'   => true,
+                'insert_id' => $this->db->getLastId()
+            );
+
+        } catch (Exception $e) {
+            return array('success' => false, 'error' => $e->getMessage());
+        }
+    }
+
     /**
      * ==========================================
      * UPDATE DYNAMIC FIELDS IN ANY TABLE
@@ -5441,5 +5726,5 @@ class ControllerApiProductApi extends Controller {
             'data' => $securityInfo
         ));
     }
-
+  
 }
